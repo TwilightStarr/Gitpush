@@ -1,0 +1,31 @@
+name: gitpush
+description: "Gitpush - GitHub icin atomik push, ZIP aktarimi, dosya gezgini ve repo yonetimi yapan mobil istemci."
+publish_to: 'none'
+version: 1.2.1+4
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  provider: ^6.1.2               # Durum yonetimi
+  http: ^1.2.2                   # GitHub API
+  archive: ^3.6.1                # ZIP acma
+  crypto: ^3.0.5                 # Git blob SHA-1, PIN karmasi
+  file_picker: ^8.1.4            # Dosya / ZIP secici
+  flutter_secure_storage: ^9.2.2 # Token ve PIN karmasi (Android Keystore)
+  shared_preferences: ^2.3.3     # Ayarlar, gecmis
+  url_launcher: ^6.3.1           # github.com baglantilari
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/icon.svg

@@ -1,0 +1,6 @@
+{
+  "name": "Gitpush",
+  "description": "GitHub repository and ZIP transfer tool with atomic Git pushes, branch management, and workflow monitoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

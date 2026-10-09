@@ -1,0 +1,121 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Eksik android klasorunu olustur (varsa dokunma)
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android --project-name gitpush --org com.example .
+          fi
+
+      - name: Tum alt projelerin (pluginler dahil) compileSdk surumunu zorla yukselt
+        run: |
+          if [ -f "android/build.gradle.kts" ]; then
+            {
+              echo 'subprojects {'
+              echo '    val applyCompileSdkOverride: () -> Unit = {'
+              echo '        if (project.plugins.hasPlugin("com.android.application") || project.plugins.hasPlugin("com.android.library")) {'
+              echo '            project.extensions.findByName("android")?.withGroovyBuilder {'
+              echo '                setProperty("compileSdkVersion", 36)'
+              echo '            }'
+              echo '        }'
+              echo '    }'
+              echo '    if (project.state.executed) {'
+              echo '        applyCompileSdkOverride()'
+              echo '    } else {'
+              echo '        afterEvaluate { applyCompileSdkOverride() }'
+              echo '    }'
+              echo '}'
+            } >> android/build.gradle.kts
+          elif [ -f "android/build.gradle" ]; then
+            {
+              echo 'subprojects {'
+              echo '    def applyCompileSdkOverride = {'
+              echo "        if (project.plugins.hasPlugin('com.android.application') || project.plugins.hasPlugin('com.android.library')) {"
+              echo '            project.android {'
+              echo '                compileSdkVersion 36'
+              echo '            }'
+              echo '        }'
+              echo '    }'
+              echo '    if (project.state.executed) {'
+              echo '        applyCompileSdkOverride()'
+              echo '    } else {'
+              echo '        afterEvaluate { applyCompileSdkOverride() }'
+              echo '    }'
+              echo '}'
+            } >> android/build.gradle
+          fi
+
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+            sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 34/' android/app/build.gradle.kts
+          elif [ -f "android/app/build.gradle" ]; then
+            sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 36/' android/app/build.gradle
+            sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/' android/app/build.gradle
+          fi
+
+      - name: JVM hedef dogrulamasini gevset (pluginlerdeki Java/Kotlin uyusmazligini engelle)
+        run: |
+          if [ -f "android/gradle.properties" ]; then
+            echo "kotlin.jvm.target.validation.mode=warning" >> android/gradle.properties
+          else
+            echo "kotlin.jvm.target.validation.mode=warning" > android/gradle.properties
+          fi
+
+      - name: AndroidManifest.xml yamasi (INTERNET, https queries, etiket, allowBackup=false, cleartext=false)
+        run: |
+          python3 tool/patch_android_manifest.py android/app/src/main/AndroidManifest.xml
+          python3 tool/patch_android_manifest.py android/app/src/main/AndroidManifest.xml --verify
+          cat android/app/src/main/AndroidManifest.xml
+
+      - name: Launcher ikonlarini assets/icon/app_icon_kaynak_1024.png dosyasindan uret
+        run: |
+          pip install --quiet pillow
+          python3 - <<'PY'
+          from PIL import Image
+          src = Image.open('assets/icon/app_icon_kaynak_1024.png').convert('RGB')
+          sizes = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
+          for name, px in sizes.items():
+              d = f'android/app/src/main/res/mipmap-{name}'
+              import os
+              os.makedirs(d, exist_ok=True)
+              src.resize((px, px), Image.LANCZOS).save(f'{d}/ic_launcher.png')
+          PY
+
+      - name: minSdk'yi 24'e yukselt (flutter_secure_storage / Keystore icin)
+        run: |
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' android/app/build.gradle.kts
+          elif [ -f "android/app/build.gradle" ]; then
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle
+          fi
+
+      - run: flutter pub get
+      - run: flutter build apk --release --obfuscate --split-debug-info=build/symbols
+
+      - name: Derlenen APK dosyasini kontrol et
+        run: |
+          if [ ! -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            echo "APK bulunamadi!"
+            exit 1
+          fi
+          ls -la build/app/outputs/flutter-apk/app-release.apk
+
+      - name: APK'yi yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk

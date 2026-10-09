@@ -1,0 +1,67 @@
+name: Test Gitpush
+
+# Her push ve PR'da çalışır; hata varsa iş kırmızı olur.
+# APK derlemesinden (build.yml) bağımsızdır, böylece kod hataları sürüm
+# oluşturulmadan önce yakalanır.
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Aynı dalda yeni bir çalışma başlarsa eskisini iptal et.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter Stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Print Flutter/Dart versions (debug)
+        run: flutter --version
+
+      - name: Birleşik main.dart / flutterCode.ts lib/ ile senkron mu?
+        run: node tool/generate_unified_dart.mjs --check
+
+      - name: Install dependencies
+        run: |
+          for i in 1 2 3; do
+            flutter pub get && break || { echo "pub get başarısız, tekrar deneniyor ($i)"; sleep 10; }
+          done
+
+      # Hata ve uyarılar işi kırar; yalnızca stil önerileri (info) engellemez.
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Flutter test
+        run: flutter test --reporter expanded
+
+      # Birleşik tek dosya gerçekten derlenebilir mi? (import çakışmalarını yakalar)
+      - name: Analyze unified main.dart
+        run: |
+          mkdir -p /tmp/unified_check/lib
+          cp public/gitpush_unified_main.dart /tmp/unified_check/lib/main.dart
+          cp pubspec.yaml /tmp/unified_check/pubspec.yaml
+          cd /tmp/unified_check
+          for i in 1 2 3; do
+            flutter pub get && break || { echo "pub get başarısız, tekrar deneniyor ($i)"; sleep 10; }
+          done
+          flutter analyze --no-fatal-infos lib/main.dart
