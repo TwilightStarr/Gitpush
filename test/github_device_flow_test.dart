@@ -139,7 +139,7 @@ void main() {
         expiresIn: 10,
         interval: 5,
       );
-      await expectLater(flow.pollForToken(_info), throwsA(isA<DeviceFlowException>()));
+      await expectLater(flow.pollForToken(info), throwsA(isA<DeviceFlowException>()));
     });
   });
 }

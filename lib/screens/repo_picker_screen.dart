@@ -60,10 +60,11 @@ class _RepoPickerScreenState extends State<RepoPickerScreen> {
                 if (name.isNotEmpty) {
                   final auth = Provider.of<AuthProvider>(context, listen: false);
                   final repoProv = Provider.of<RepoProvider>(context, listen: false);
+                  final navigator = Navigator.of(context);
                   Navigator.pop(ctx);
                   final created = await repoProv.createNewRepo(auth.token!, name, isPrivate);
                   if (created != null && mounted) {
-                    Navigator.pop(context);
+                    navigator.pop();
                   }
                 }
               },

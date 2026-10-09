@@ -75,6 +75,8 @@ for (const path of files) {
       const isOwnPackage = target.startsWith('package:gitpush/');
       if (isRelative || isOwnPackage) continue; // birleşik dosyada gereksiz
       const normalized = line.trim();
+      // Uint8List/ByteData zaten package:flutter/services.dart ile gelir (unnecessary_import).
+      if (normalized === "import 'dart:typed_data';") continue;
       externalImports.add(IMPORT_OVERRIDES.get(normalized) ?? normalized);
       continue;
     }
