@@ -40,7 +40,10 @@ void main() {
 
     final withSlash = fileItem('lib/screens/', 'a', name: 'a.dart');
     final bare = fileItem('lib/screens', 'a', name: 'a.dart');
-    RepoDiff.classify([withSlash, bare], idx);
+    // Ayrı ayrı sınıflandırılır: aynı pakette olsalar toplu çakışma kontrolü
+    // (lib/screens dosyası + lib/screens/a.dart) birbirlerini çakışma sayar.
+    RepoDiff.classify([withSlash], idx);
+    RepoDiff.classify([bare], idx);
 
     expect(withSlash.targetPath, 'lib/screens/a.dart');
     expect(withSlash.status, GitFileStatus.isNew);
