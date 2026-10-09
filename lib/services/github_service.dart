@@ -868,7 +868,7 @@ class GitHubService {
     String owner,
     String repo,
     String sha, {
-    int maxBytes = 2 * 1024 * 1024,
+    int maxBytes = 100 * 1024 * 1024,
   }) async {
     if (!_shaRe.hasMatch(sha)) {
       throw GitHubApiException(0, 'Geçersiz dosya SHA değeri.');

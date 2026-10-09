@@ -123,6 +123,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Önizleme sınırını MB olarak sorar; geçerliyse KB döndürür.
+  Future<int?> _askPreviewLimitMb(int currentKb) {
+    final ctrl = TextEditingController(
+      text: (currentKb / 1024).toStringAsFixed(currentKb % 1024 == 0 ? 0 : 2),
+    );
+    String? error;
+    final maxMb = AppSettings.previewMaxKbMax ~/ 1024;
+    final rangeText = '${AppSettings.formatKb(AppSettings.previewMaxKbMin)} ile '
+        '${AppSettings.formatKb(AppSettings.previewMaxKbMax)} arasında olmalı.';
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          void submit() {
+            final raw = ctrl.text.trim().replaceAll(',', '.');
+            final mb = double.tryParse(raw);
+            if (mb == null || mb.isNaN || mb.isInfinite) {
+              setLocal(() => error = 'Geçerli bir sayı girin.');
+              return;
+            }
+            final kb = (mb * 1024).round();
+            if (kb < AppSettings.previewMaxKbMin || kb > AppSettings.previewMaxKbMax) {
+              setLocal(() => error = rangeText);
+              return;
+            }
+            Navigator.pop(ctx, kb);
+          }
+
+          return AlertDialog(
+            title: const Text('Önizleme boyut sınırı'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Sınır (MB)',
+                    helperText: 'En çok $maxMb MB (GitHub API sınırı)',
+                    errorText: error,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Büyük dosyalar yavaş açılır ve daha çok bellek/veri kullanır.',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('İptal')),
+              FilledButton(onPressed: submit, child: const Text('Kaydet')),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _logout() async {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final ok = await ConfirmDialog.show(
@@ -419,14 +481,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ListTile(
               leading: const Icon(Icons.description_outlined),
               title: const Text('Önizleme boyut sınırı'),
-              subtitle: Text('${s.previewMaxKb} KB üstü dosyalar indirilmez'),
+              subtitle: Text('${AppSettings.formatKb(s.previewMaxKb)} üstü dosyalar indirilmez'),
               onTap: () async {
+                const customKey = -1;
+                final isPreset = AppSettings.previewMaxKbOptions.contains(s.previewMaxKb);
                 final v = await _pick<int>(
                   'Önizleme boyut sınırı',
-                  {for (final k in AppSettings.previewMaxKbOptions) k: k >= 1024 ? '${k ~/ 1024} MB' : '$k KB'},
-                  s.previewMaxKb,
+                  {
+                    for (final k in AppSettings.previewMaxKbOptions) k: AppSettings.formatKb(k),
+                    customKey: isPreset ? 'Özel…' : 'Özel… (${AppSettings.formatKb(s.previewMaxKb)})',
+                  },
+                  isPreset ? s.previewMaxKb : customKey,
                 );
-                if (v != null) set((c) => c.copyWith(previewMaxKb: v));
+                if (v == null) return;
+                if (v == customKey) {
+                  final custom = await _askPreviewLimitMb(s.previewMaxKb);
+                  if (custom != null) set((c) => c.copyWith(previewMaxKb: custom));
+                } else {
+                  set((c) => c.copyWith(previewMaxKb: v));
+                }
               },
             ),
             SwitchListTile(

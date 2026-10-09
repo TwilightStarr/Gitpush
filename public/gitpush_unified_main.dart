@@ -196,7 +196,20 @@ class AppSettings {
   });
 
   /// Seçilebilir azami değerler (ayar ekranı bu listelerden seçtirir).
-  static const List<int> previewMaxKbOptions = [128, 512, 1024, 2048];
+  static const List<int> previewMaxKbOptions = [128, 512, 1024, 2048, 5120, 10240, 25600, 51200, 102400];
+
+  /// Önizleme sınırı için kullanıcının girebileceği aralık (KB).
+  /// Üst sınır GitHub Git Blobs API'nin 100 MB sınırıdır.
+  static const int previewMaxKbMin = 16;
+  static const int previewMaxKbMax = 102400;
+
+  /// KB değerini okunabilir metne çevirir (ör. 512 -> "512 KB", 5120 -> "5 MB").
+  static String formatKb(int kb) {
+    if (kb < 1024) return '$kb KB';
+    final mb = kb / 1024;
+    final text = mb == mb.roundToDouble() ? mb.toStringAsFixed(0) : mb.toStringAsFixed(1);
+    return '$text MB';
+  }
   static const List<int> historyLimitOptions = [25, 50, 100, 200];
   static const List<int> lockTimeoutOptions = [0, 30, 60, 300];
   static const List<int> autoLogoutOptions = [0, 7, 30, 90];
@@ -221,6 +234,9 @@ class AppSettings {
   ];
 
   int get accentColorValue => accentPalette[_clampIndex(accentIndex)];
+
+  static int? _validPreviewKb(int kb) =>
+      kb >= previewMaxKbMin && kb <= previewMaxKbMax ? kb : null;
 
   static int _clampIndex(int i) => i < 0 || i >= accentPalette.length ? 0 : i;
 
@@ -323,7 +339,9 @@ class AppSettings {
       showHiddenFiles: b('showHiddenFiles', d.showHiddenFiles),
       repoListSort: enumOf('repoListSort', RepoListSort.values, d.repoListSort),
       rememberLastRepo: b('rememberLastRepo', d.rememberLastRepo),
-      previewMaxKb: pick('previewMaxKb', previewMaxKbOptions, d.previewMaxKb),
+      // Hazır seçenekler dışında kullanıcı tanımlı değerler de geçerlidir;
+      // yalnızca izin verilen aralık dışı / bozuk değerler varsayılana döner.
+      previewMaxKb: _validPreviewKb(i('previewMaxKb', d.previewMaxKb)) ?? d.previewMaxKb,
       previewWrapLines: b('previewWrapLines', d.previewWrapLines),
       previewFontSize: fs.clamp(10.0, 18.0).toDouble(),
       historyLimit: pick('historyLimit', historyLimitOptions, d.historyLimit),
@@ -3160,7 +3178,7 @@ class GitHubService {
     String owner,
     String repo,
     String sha, {
-    int maxBytes = 2 * 1024 * 1024,
+    int maxBytes = 100 * 1024 * 1024,
   }) async {
     if (!_shaRe.hasMatch(sha)) {
       throw GitHubApiException(0, 'Geçersiz dosya SHA değeri.');
@@ -7771,7 +7789,6 @@ class FileDetailScreen extends StatefulWidget {
 }
 
 class _FileDetailScreenState extends State<FileDetailScreen> {
-  static const int _maxImageBytes = 4 * 1024 * 1024;
   static const int _maxRenderedLines = 3000;
 
   late final PreviewKind _kind = previewKindFor(widget.entry.name);
@@ -7819,7 +7836,8 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
       return;
     }
 
-    final limit = _kind == PreviewKind.image ? _maxImageBytes : settings.previewMaxKb * 1024;
+    // Hem metin hem görsel için kullanıcının ayarladığı sınır geçerlidir.
+    final limit = settings.previewMaxKb * 1024;
     if (entry.size > limit) {
       setState(() {
         _loading = false;
@@ -11298,6 +11316,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// Önizleme sınırını MB olarak sorar; geçerliyse KB döndürür.
+  Future<int?> _askPreviewLimitMb(int currentKb) {
+    final ctrl = TextEditingController(
+      text: (currentKb / 1024).toStringAsFixed(currentKb % 1024 == 0 ? 0 : 2),
+    );
+    String? error;
+    final maxMb = AppSettings.previewMaxKbMax ~/ 1024;
+    final rangeText = '${AppSettings.formatKb(AppSettings.previewMaxKbMin)} ile '
+        '${AppSettings.formatKb(AppSettings.previewMaxKbMax)} arasında olmalı.';
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          void submit() {
+            final raw = ctrl.text.trim().replaceAll(',', '.');
+            final mb = double.tryParse(raw);
+            if (mb == null || mb.isNaN || mb.isInfinite) {
+              setLocal(() => error = 'Geçerli bir sayı girin.');
+              return;
+            }
+            final kb = (mb * 1024).round();
+            if (kb < AppSettings.previewMaxKbMin || kb > AppSettings.previewMaxKbMax) {
+              setLocal(() => error = rangeText);
+              return;
+            }
+            Navigator.pop(ctx, kb);
+          }
+
+          return AlertDialog(
+            title: const Text('Önizleme boyut sınırı'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Sınır (MB)',
+                    helperText: 'En çok $maxMb MB (GitHub API sınırı)',
+                    errorText: error,
+                  ),
+                  onSubmitted: (_) => submit(),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Büyük dosyalar yavaş açılır ve daha çok bellek/veri kullanır.',
+                  style: Theme.of(ctx).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('İptal')),
+              FilledButton(onPressed: submit, child: const Text('Kaydet')),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _logout() async {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final ok = await ConfirmDialog.show(
@@ -11594,14 +11674,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ListTile(
               leading: const Icon(Icons.description_outlined),
               title: const Text('Önizleme boyut sınırı'),
-              subtitle: Text('${s.previewMaxKb} KB üstü dosyalar indirilmez'),
+              subtitle: Text('${AppSettings.formatKb(s.previewMaxKb)} üstü dosyalar indirilmez'),
               onTap: () async {
+                const customKey = -1;
+                final isPreset = AppSettings.previewMaxKbOptions.contains(s.previewMaxKb);
                 final v = await _pick<int>(
                   'Önizleme boyut sınırı',
-                  {for (final k in AppSettings.previewMaxKbOptions) k: k >= 1024 ? '${k ~/ 1024} MB' : '$k KB'},
-                  s.previewMaxKb,
+                  {
+                    for (final k in AppSettings.previewMaxKbOptions) k: AppSettings.formatKb(k),
+                    customKey: isPreset ? 'Özel…' : 'Özel… (${AppSettings.formatKb(s.previewMaxKb)})',
+                  },
+                  isPreset ? s.previewMaxKb : customKey,
                 );
-                if (v != null) set((c) => c.copyWith(previewMaxKb: v));
+                if (v == null) return;
+                if (v == customKey) {
+                  final custom = await _askPreviewLimitMb(s.previewMaxKb);
+                  if (custom != null) set((c) => c.copyWith(previewMaxKb: custom));
+                } else {
+                  set((c) => c.copyWith(previewMaxKb: v));
+                }
               },
             ),
             SwitchListTile(

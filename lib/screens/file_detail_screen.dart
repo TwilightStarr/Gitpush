@@ -30,7 +30,6 @@ class FileDetailScreen extends StatefulWidget {
 }
 
 class _FileDetailScreenState extends State<FileDetailScreen> {
-  static const int _maxImageBytes = 4 * 1024 * 1024;
   static const int _maxRenderedLines = 3000;
 
   late final PreviewKind _kind = previewKindFor(widget.entry.name);
@@ -78,7 +77,8 @@ class _FileDetailScreenState extends State<FileDetailScreen> {
       return;
     }
 
-    final limit = _kind == PreviewKind.image ? _maxImageBytes : settings.previewMaxKb * 1024;
+    // Hem metin hem görsel için kullanıcının ayarladığı sınır geçerlidir.
+    final limit = settings.previewMaxKb * 1024;
     if (entry.size > limit) {
       setState(() {
         _loading = false;

@@ -101,7 +101,20 @@ class AppSettings {
   });
 
   /// Seçilebilir azami değerler (ayar ekranı bu listelerden seçtirir).
-  static const List<int> previewMaxKbOptions = [128, 512, 1024, 2048];
+  static const List<int> previewMaxKbOptions = [128, 512, 1024, 2048, 5120, 10240, 25600, 51200, 102400];
+
+  /// Önizleme sınırı için kullanıcının girebileceği aralık (KB).
+  /// Üst sınır GitHub Git Blobs API'nin 100 MB sınırıdır.
+  static const int previewMaxKbMin = 16;
+  static const int previewMaxKbMax = 102400;
+
+  /// KB değerini okunabilir metne çevirir (ör. 512 -> "512 KB", 5120 -> "5 MB").
+  static String formatKb(int kb) {
+    if (kb < 1024) return '$kb KB';
+    final mb = kb / 1024;
+    final text = mb == mb.roundToDouble() ? mb.toStringAsFixed(0) : mb.toStringAsFixed(1);
+    return '$text MB';
+  }
   static const List<int> historyLimitOptions = [25, 50, 100, 200];
   static const List<int> lockTimeoutOptions = [0, 30, 60, 300];
   static const List<int> autoLogoutOptions = [0, 7, 30, 90];
@@ -126,6 +139,9 @@ class AppSettings {
   ];
 
   int get accentColorValue => accentPalette[_clampIndex(accentIndex)];
+
+  static int? _validPreviewKb(int kb) =>
+      kb >= previewMaxKbMin && kb <= previewMaxKbMax ? kb : null;
 
   static int _clampIndex(int i) => i < 0 || i >= accentPalette.length ? 0 : i;
 
@@ -228,7 +244,9 @@ class AppSettings {
       showHiddenFiles: b('showHiddenFiles', d.showHiddenFiles),
       repoListSort: enumOf('repoListSort', RepoListSort.values, d.repoListSort),
       rememberLastRepo: b('rememberLastRepo', d.rememberLastRepo),
-      previewMaxKb: pick('previewMaxKb', previewMaxKbOptions, d.previewMaxKb),
+      // Hazır seçenekler dışında kullanıcı tanımlı değerler de geçerlidir;
+      // yalnızca izin verilen aralık dışı / bozuk değerler varsayılana döner.
+      previewMaxKb: _validPreviewKb(i('previewMaxKb', d.previewMaxKb)) ?? d.previewMaxKb,
       previewWrapLines: b('previewWrapLines', d.previewWrapLines),
       previewFontSize: fs.clamp(10.0, 18.0).toDouble(),
       historyLimit: pick('historyLimit', historyLimitOptions, d.historyLimit),

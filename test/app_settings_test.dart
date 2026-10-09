@@ -21,6 +21,19 @@ void main() {
     expect(s.previewFontSize, 18);
   });
 
+  test('önizleme sınırı: özel değer korunur, aralık dışı varsayılana döner', () {
+    expect(AppSettings.fromMap({'previewMaxKb': 7000}).previewMaxKb, 7000);
+    expect(AppSettings.fromMap({'previewMaxKb': 102400}).previewMaxKb, 102400);
+    expect(AppSettings.fromMap({'previewMaxKb': 102401}).previewMaxKb, 512);
+    expect(AppSettings.fromMap({'previewMaxKb': 0}).previewMaxKb, 512);
+    expect(AppSettings.fromMap({'previewMaxKb': 'x'}).previewMaxKb, 512);
+    const s = AppSettings(previewMaxKb: 30000);
+    expect(AppSettings.fromJson(s.toJson()).previewMaxKb, 30000);
+    expect(AppSettings.formatKb(512), '512 KB');
+    expect(AppSettings.formatKb(5120), '5 MB');
+    expect(AppSettings.formatKb(1536), '1.5 MB');
+  });
+
   test('PIN karması tuza bağlıdır ve doğrulanır', () {
     final a = AppLockService.hashPin('492817', [1, 2, 3], rounds: 10);
     final b = AppLockService.hashPin('492817', [1, 2, 4], rounds: 10);
