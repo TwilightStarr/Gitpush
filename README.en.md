@@ -18,7 +18,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Flutter" src="https://img.shields.io/badge/Flutter-Android-02569B?logo=flutter&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/Web-React%20%2B%20Vite-61DAFB?logo=react&logoColor=black">
-  <a href="https://github.com/KULLANICI_ADI/REPO_ADI/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/KULLANICI_ADI/REPO_ADI/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://github.com/TwilightStarr/Gitpush/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/TwilightStarr/Gitpush/actions/workflows/test.yml/badge.svg"></a>
 </p>
 
 ---
