@@ -40,11 +40,13 @@ jobs:
           gradle-version: "9.3.1"
 
       - name: Unit tests
-        run: gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee unit-tests.log
+        id: tests
+        run: gradle :app:testDebugUnitTest --no-daemon --warning-mode all 2>&1 | tee unit-tests.log
 
       # Sabit imza anahtarını secret'tan çözer. Release yayımlanacaksa anahtar zorunludur;
       # yoksa debug anahtarıyla imzalı (güncelleme olarak kurulamayan) bir release çıkmasın diye hata verir.
       - name: Prepare signing key
+        id: key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           RELEASE: ${{ steps.version.outputs.release }}
@@ -60,40 +62,84 @@ jobs:
           fi
 
       - name: Release APK
+        id: release
+        # Testler başarısız olsa bile release derlemesi de raporlansın.
+        if: ${{ !cancelled() }}
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
           APP_VERSION: ${{ steps.version.outputs.version }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle :app:assembleRelease --no-daemon -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee release-build.log
+        run: gradle :app:assembleRelease --no-daemon --warning-mode all -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee release-build.log
 
-      - name: Collect warnings and errors
+      - name: Collect All-reports.txt
         if: always()
+        env:
+          OUT_VERSION: ${{ steps.version.outcome }}
+          OUT_TESTS: ${{ steps.tests.outcome }}
+          OUT_KEY: ${{ steps.key.outcome }}
+          OUT_RELEASE: ${{ steps.release.outcome }}
         run: |
+          R=All-reports.txt
           {
-            echo "=== WARNINGS AND ERRORS REPORT ==="
-            echo "Run: ${GITHUB_RUN_ID}  Commit: ${GITHUB_SHA}"
+            echo "=== ALL REPORTS ==="
+            echo "Run: ${GITHUB_RUN_ID}  Commit: ${GITHUB_SHA}  Branch: ${GITHUB_REF_NAME}"
             echo "Date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo
+            echo "=== STEP RESULTS ==="
+            echo "Compute version : ${OUT_VERSION}"
+            echo "Unit tests      : ${OUT_TESTS}"
+            echo "Signing key     : ${OUT_KEY}"
+            echo "Release APK     : ${OUT_RELEASE}"
+            echo
+            echo "=== TOOL VERSIONS ==="
+            java -version 2>&1 | head -n 1
+            grep -E 'distributionUrl' gradle/wrapper/gradle-wrapper.properties || true
+            grep -E 'com.android.application|plugin.compose' build.gradle.kts || true
+            grep -E 'compileSdk|targetSdk|minSdk' app/build.gradle.kts || true
+            echo
             for f in unit-tests.log release-build.log; do
-              echo "----- ${f} -----"
-              if [ -f "$f" ]; then
-                grep -E '^(w|e): |^ERROR|^Error:|^FAILURE|^BUILD FAILED|What went wrong|Execution failed|^Missing class|^warning:|^Warning:|WARNING|deprecated|Unable to ' "$f" || echo "(no warnings or errors found)"
-              else
-                echo "(log file not found - the step did not run)"
+              echo "=================== ${f} ==================="
+              if [ ! -f "$f" ]; then
+                echo "(log file not found - the step did not run)"; echo; continue
               fi
+              echo "--- Result ---"
+              grep -E '^BUILD (SUCCESSFUL|FAILED)' "$f" || echo "(no BUILD result line)"
+              echo
+              echo "--- Failure details (full 'What went wrong' block) ---"
+              awk '/^\* What went wrong:/{p=1} /^\* Try:/{p=0} p' "$f" | grep . || echo "(no failure)"
+              echo
+              echo "--- Failed tasks ---"
+              grep -E '^> Task .* FAILED' "$f" || echo "(none)"
+              echo
+              echo "--- Errors and warnings (line number: text) ---"
+              grep -nE '^(w|e): |^ERROR|^Error:|^FAILURE|^warning:|^Warning:|WARNING|deprecated|Deprecated|Unable to |^Missing class|FAILED$' "$f" || echo "(none)"
               echo
             done
-          } > "uyarılar-ve-hatalar.txt"
+            echo "=================== UNIT TEST RESULTS ==================="
+            shopt -s globstar nullglob
+            xmls=(app/build/test-results/**/*.xml)
+            if [ ${#xmls[@]} -eq 0 ]; then
+              echo "(no test result files)"
+            else
+              grep -ho 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "${xmls[@]}" \
+                | awk -F'"' '{t+=$2;s+=$4;f+=$6;e+=$8} END{print "tests="t" skipped="s" failures="f" errors="e}'
+              grep -l '<failure\|<error' "${xmls[@]}" | while read -r x; do
+                echo "--- FAILED: $x ---"
+                grep -A15 '<failure\|<error' "$x" | head -n 60
+              done
+            fi
+          } > "$R" 2>&1
+          echo "Report: $(wc -l < "$R") lines"
 
       # v6+ runs on Node.js 24 (v5 still ran on Node.js 20 -> deprecation warning).
-      - name: Upload warnings and errors report
+      - name: Upload All-reports.txt
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: warnings-and-errors
-          path: uyarılar-ve-hatalar.txt
+          name: All-reports
+          path: All-reports.txt
           if-no-files-found: warn
 
       - name: Upload APK
