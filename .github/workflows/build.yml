@@ -50,9 +50,24 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           RELEASE: ${{ steps.version.outputs.release }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            echo "${KEYSTORE_BASE64}" | tr -d '[:space:]' | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            # Erken doğrulama: hangi secret yanlış olduğunu net söyler (değerleri yazdırmaz).
+            if ! keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" >/dev/null 2>&1; then
+              echo "::error::Keystore açılamadı: KEYSTORE_BASE64 bozuk veya KEYSTORE_PASSWORD yanlış."; exit 1
+            fi
+            if ! keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" >/dev/null 2>&1; then
+              echo "::error::KEY_ALIAS yanlış. Keystore'daki takma adlar:"
+              keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" 2>/dev/null | grep -i 'trustedCertEntry\|PrivateKeyEntry' | cut -d, -f1
+              exit 1
+            fi
+            if ! keytool -keypasswd -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" -keypass "${KEY_PASSWORD}" -new "${KEY_PASSWORD}" >/dev/null 2>&1; then
+              echo "::error::KEY_PASSWORD yanlış (PKCS12 için KEYSTORE_PASSWORD ile aynı olmalı)."; exit 1
+            fi
             echo "KEYSTORE_FILE=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
           elif [ "${RELEASE}" = "true" ]; then
             echo "::error::KEYSTORE_BASE64 secret'ı tanımlı değil. Sabit imza olmadan release yayımlanmaz (README: 'Sabit imza')."
@@ -73,6 +88,36 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon --warning-mode all -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee release-build.log
 
+      - name: Upload APK
+        id: upload_apk
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitpush-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+      # Yalnızca main dalında, testler ve derleme başarılıysa ve sürüm artışı gerekiyorsa çalışır.
+      # `gh` runner'da hazır gelir; üçüncü taraf action (ve Node sürümü) gerektirmez.
+      - name: Publish GitHub Release
+        if: steps.version.outputs.release == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        id: publish
+        run: |
+          {
+            echo "APK dosyaları:"; find app/build/outputs -name '*.apk' || true
+            apk="$(find app/build/outputs/apk -name '*.apk' | head -n 1)"
+            [ -n "$apk" ] || { echo "HATA: APK bulunamadı"; exit 1; }
+            [ -f release-notes.md ] || echo "Sürüm notu yok." > release-notes.md
+            cp "$apk" "Gitpush-${TAG}.apk"
+            gh release create "${TAG}" "Gitpush-${TAG}.apk" \
+              --target "${GITHUB_SHA}" \
+              --title "Gitpush ${TAG}" \
+              --notes-file release-notes.md \
+              --latest
+          } 2>&1 | tee publish.log
+
       - name: Collect All-reports.txt
         if: always()
         env:
@@ -80,6 +125,8 @@ jobs:
           OUT_TESTS: ${{ steps.tests.outcome }}
           OUT_KEY: ${{ steps.key.outcome }}
           OUT_RELEASE: ${{ steps.release.outcome }}
+          OUT_UPLOAD: ${{ steps.upload_apk.outcome }}
+          OUT_PUBLISH: ${{ steps.publish.outcome }}
         run: |
           R=All-reports.txt
           {
@@ -92,6 +139,8 @@ jobs:
             echo "Unit tests      : ${OUT_TESTS}"
             echo "Signing key     : ${OUT_KEY}"
             echo "Release APK     : ${OUT_RELEASE}"
+            echo "Upload APK      : ${OUT_UPLOAD}"
+            echo "Publish release : ${OUT_PUBLISH}"
             echo
             echo "=== TOOL VERSIONS ==="
             java -version 2>&1 | head -n 1
@@ -99,7 +148,7 @@ jobs:
             grep -E 'com.android.application|plugin.compose' build.gradle.kts || true
             grep -E 'compileSdk|targetSdk|minSdk' app/build.gradle.kts || true
             echo
-            for f in unit-tests.log release-build.log; do
+            for f in unit-tests.log release-build.log publish.log; do
               echo "=================== ${f} ==================="
               if [ ! -f "$f" ]; then
                 echo "(log file not found - the step did not run)"; echo; continue
@@ -117,6 +166,9 @@ jobs:
               grep -nE '^(w|e): |^ERROR|^Error:|^FAILURE|^warning:|^Warning:|WARNING|deprecated|Deprecated|Unable to |^Missing class|FAILED$' "$f" || echo "(none)"
               echo
             done
+            echo "=================== APK FILES ==================="
+            find app/build/outputs -name '*.apk' 2>/dev/null || true
+            echo
             echo "=================== UNIT TEST RESULTS ==================="
             shopt -s globstar nullglob
             xmls=(app/build/test-results/**/*.xml)
@@ -141,25 +193,3 @@ jobs:
           name: All-reports
           path: All-reports.txt
           if-no-files-found: warn
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v7
-        with:
-          name: gitpush-apk
-          path: app/build/outputs/apk/release/*.apk
-
-      # Yalnızca main dalında, testler ve derleme başarılıysa ve sürüm artışı gerekiyorsa çalışır.
-      # `gh` runner'da hazır gelir; üçüncü taraf action (ve Node sürümü) gerektirmez.
-      - name: Publish GitHub Release
-        if: steps.version.outputs.release == 'true' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
-          cp "$apk" "Gitpush-${TAG}.apk"
-          gh release create "${TAG}" "Gitpush-${TAG}.apk" \
-            --target "${GITHUB_SHA}" \
-            --title "Gitpush ${TAG}" \
-            --notes-file release-notes.md \
-            --latest
