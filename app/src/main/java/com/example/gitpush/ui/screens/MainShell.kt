@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -72,6 +73,7 @@ import com.example.gitpush.ui.Dialogs
 import com.example.gitpush.ui.Route
 import com.example.gitpush.ui.Snacks
 import com.example.gitpush.ui.components.EmptyState
+import com.example.gitpush.ui.components.GpHeader
 import com.example.gitpush.ui.components.KeepAlive
 import com.example.gitpush.ui.components.ModeCard
 import com.example.gitpush.ui.components.RepoBranchChip
@@ -115,22 +117,16 @@ fun MainShell() {
                 KeepAlive(current == 1) { RepoBrowserScreen() }
                 KeepAlive(current == 2) { ActionsScreen(isActive = current == 2) }
                 KeepAlive(current == 3) { HistoryScreen() }
-                KeepAlive(current == 4) { SettingsScreen() }
+                KeepAlive(current == 4) { SettingsScreen(isActive = current == 4) }
             }
         }
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(tabs[current].title, fontWeight = FontWeight.Bold) },
-                actions = {
-                    Box(Modifier.padding(end = 12.dp)) {
-                        RepoBranchChip(g.repo.selectedRepo?.fullName, g.repo.selectedBranch) { g.nav.push(Route.RepoPicker) }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
+            GpHeader(tabs[current].title) {
+                RepoBranchChip(g.repo.selectedRepo?.fullName, g.repo.selectedBranch) { g.nav.push(Route.RepoPicker) }
+            }
         },
         bottomBar = {
             if (!isTablet) {
@@ -197,23 +193,10 @@ fun SendScreen() {
         modifier = Modifier.fillMaxSize(),
     ) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-            SectionCard(
-                "Aktif Hedef Depo",
-                trailing = { TextButton(onClick = { g.nav.push(Route.RepoPicker) }) { Text("Değiştir") } },
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        if (repo.isPrivate) Icons.Filled.Lock else Icons.Outlined.Public, null,
-                        Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(repo.fullName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        Text("Dal: $branch", style = AppTheme.mono.copy(fontSize = 12.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
+            Text(
+                "Hedef dal: $branch", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, bottom = 12.dp),
+            )
             ModeCard(
                 "ZIP'ten Aktar",
                 "Telefonda seçtiğiniz bir ZIP arşivini açın, dosya ağacını inceleyin ve tek seferde repoya yükleyin.",
@@ -256,17 +239,14 @@ fun HistoryScreen() {
         return
     }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(end = 8.dp, top = 4.dp), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("${history.size} gönderim", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick = {
                 scope.launch {
                     val ok = Dialogs.confirm("Geçmiş Temizlensin mi?", "Tüm yerel gönderim kayıtları silinecek.", destructive = true)
                     if (ok) g.upload.clearHistory()
                 }
-            }) {
-                Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Geçmişi Temizle")
-            }
+            }) { Icon(Icons.Outlined.DeleteOutline, "Geçmişi temizle") }
         }
         LazyColumn(
             Modifier.fillMaxSize(),

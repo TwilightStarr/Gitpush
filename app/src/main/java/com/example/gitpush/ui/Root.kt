@@ -1,6 +1,14 @@
 package com.example.gitpush.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.graphics.drawable.ColorDrawable
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -14,6 +22,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.SideEffect
@@ -52,6 +63,7 @@ fun GitpushRoot(ready: Boolean) {
     SideEffect { Snacks.scope = scope }
 
     GitpushTheme(seed = ComposeColor(settings.accentColorValue), dark = dark, amoled = settings.amoledDark) {
+        SystemBarsAndWindow(dark)
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             if (!ready) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -111,5 +123,36 @@ private fun RouteContent(route: Route) {
         is Route.FileDetail -> FileDetailScreen(route.entry)
         is Route.FileEditor -> FileEditorScreen(route)
         is Route.Commits -> CommitsScreen(route.path)
+    }
+}
+
+private fun Context.findActivity(): Activity? {
+    var c: Context? = this
+    while (c is ContextWrapper) {
+        if (c is Activity) return c
+        c = c.baseContext
+    }
+    return null
+}
+
+/**
+ * Durum/gezinme çubuğu simgeleri ve pencere zemini SİSTEM temasına değil UYGULAMANIN seçili temasına uyar.
+ * (Önceden "açık" seçiliyken sistem koyuysa üst çubuk koyu kalıyor, simgeler okunmuyordu.)
+ */
+@Composable
+private fun SystemBarsAndWindow(dark: Boolean) {
+    val activity = LocalContext.current.findActivity() as? ComponentActivity ?: return
+    val bg = MaterialTheme.colorScheme.surface.toArgb()
+    DisposableEffect(dark) {
+        activity.enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { dark },
+            navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { dark },
+        )
+        if (Build.VERSION.SDK_INT >= 29) activity.window.isNavigationBarContrastEnforced = false
+        onDispose { }
+    }
+    DisposableEffect(bg) {
+        activity.window.setBackgroundDrawable(ColorDrawable(bg))
+        onDispose { }
     }
 }

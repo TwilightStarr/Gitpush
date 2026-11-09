@@ -1,5 +1,7 @@
 package com.example.gitpush.ui.theme
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -89,10 +91,36 @@ fun schemeFromSeed(seed: Color, dark: Boolean, amoled: Boolean): ColorScheme {
     )
 }
 
+/** Tema değişince renkleri ani sıçrama yerine yumuşakça geçirir; yarım kalmış/yarı koyu kareler oluşmaz. */
+@Composable
+private fun ColorScheme.animated(): ColorScheme {
+    val spec = tween<Color>(durationMillis = 220)
+    @Composable fun a(c: Color): Color = animateColorAsState(c, spec, label = "scheme").value
+    return copy(
+        primary = a(primary), onPrimary = a(onPrimary),
+        primaryContainer = a(primaryContainer), onPrimaryContainer = a(onPrimaryContainer),
+        secondary = a(secondary), onSecondary = a(onSecondary),
+        secondaryContainer = a(secondaryContainer), onSecondaryContainer = a(onSecondaryContainer),
+        tertiary = a(tertiary), onTertiary = a(onTertiary),
+        tertiaryContainer = a(tertiaryContainer), onTertiaryContainer = a(onTertiaryContainer),
+        background = a(background), onBackground = a(onBackground),
+        surface = a(surface), onSurface = a(onSurface),
+        surfaceVariant = a(surfaceVariant), onSurfaceVariant = a(onSurfaceVariant),
+        surfaceTint = a(surfaceTint),
+        outline = a(outline), outlineVariant = a(outlineVariant),
+        error = a(error), onError = a(onError),
+        errorContainer = a(errorContainer), onErrorContainer = a(onErrorContainer),
+        inverseSurface = a(inverseSurface), inverseOnSurface = a(inverseOnSurface), inversePrimary = a(inversePrimary),
+        surfaceContainerLowest = a(surfaceContainerLowest), surfaceContainerLow = a(surfaceContainerLow),
+        surfaceContainer = a(surfaceContainer), surfaceContainerHigh = a(surfaceContainerHigh),
+        surfaceContainerHighest = a(surfaceContainerHighest),
+    )
+}
+
 @Composable
 fun GitpushTheme(seed: Color, dark: Boolean, amoled: Boolean, content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = schemeFromSeed(seed, dark, amoled),
+        colorScheme = schemeFromSeed(seed, dark, amoled).animated(),
         shapes = Shapes(
             extraSmall = RoundedCornerShape(6.dp),
             small = RoundedCornerShape(8.dp),

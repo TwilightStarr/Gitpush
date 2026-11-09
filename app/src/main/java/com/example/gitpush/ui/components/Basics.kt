@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,7 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Source
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.outlined.CreateNewFolder
@@ -292,28 +294,51 @@ fun ModeCard(
 ) {
     val cs = MaterialTheme.colorScheme
     Card(
-        onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
+        onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp)).background(iconColor.copy(alpha = 0.12f)).padding(10.dp)) {
-                    Icon(icon, null, Modifier.size(28.dp), tint = iconColor)
-                }
-                Box(Modifier.clip(RoundedCornerShape(8.dp)).background(cs.surfaceContainerHighest).padding(horizontal = 8.dp, vertical = 4.dp)) {
-                    Text(badgeText, style = AppTheme.monoBold.copy(fontSize = 10.sp), color = cs.primary)
-                }
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(iconColor.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(26.dp), tint = iconColor)
             }
-            Spacer(Modifier.height(14.dp))
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
-            Text(description, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                Text("BAŞLAT", style = AppTheme.monoBold.copy(fontSize = 12.sp), color = cs.primary)
-                Spacer(Modifier.width(4.dp))
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp), tint = cs.primary)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                    Spacer(Modifier.width(8.dp))
+                    Box(Modifier.clip(RoundedCornerShape(6.dp)).background(cs.surfaceContainerHighest).padding(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text(badgeText, style = AppTheme.monoBold.copy(fontSize = 10.sp), color = cs.primary, maxLines = 1)
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(description, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = cs.onSurfaceVariant)
         }
+    }
+}
+
+/**
+ * Ana ekranların üst başlığı. Başlık her zaman tek satırda ve yatayda tam okunur;
+ * sağdaki içerik (depo rozeti) kalan alana sığar, gerekirse kısalır.
+ * (Eski TopAppBar'da uzun rozet başlığı sıkıştırıp harf harf alt satıra kırıyordu.)
+ */
+@Composable
+fun GpHeader(title: String, trailing: @Composable () -> Unit = {}) {
+    Row(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .heightIn(min = 64.dp)
+            .padding(start = 20.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
+            maxLines = 1, softWrap = false,
+        )
+        Spacer(Modifier.width(12.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { trailing() }
     }
 }
