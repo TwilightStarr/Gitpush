@@ -26,7 +26,7 @@ enum class RepoListSort(val label: String) {
 
 data class AppSettings(
     val accentIndex: Int = 0,
-    val amoledDark: Boolean = false,
+    val amoledDark: Boolean = true,
     val defaultCommitMessage: String = "",
     val haptics: Boolean = true,
     val repoSort: RepoSortMode = RepoSortMode.NameAsc,

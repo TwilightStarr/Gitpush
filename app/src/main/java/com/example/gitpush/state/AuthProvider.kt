@@ -9,6 +9,7 @@ import com.example.gitpush.service.GitHubApiException
 import com.example.gitpush.service.GitHubDeviceFlow
 import com.example.gitpush.service.GitHubService
 import com.example.gitpush.service.StorageService
+import com.example.gitpush.util.asLong
 import com.example.gitpush.util.asStr
 import kotlinx.coroutines.CancellationException
 
@@ -31,6 +32,40 @@ class AuthProvider(private val storage: StorageService, private val github: GitH
         private set
     var deviceInfo by mutableStateOf<DeviceCodeInfo?>(null)
         private set
+
+    /**
+     * Yeni girişten sonra kurulum adımları (kimlik, tamamlandı) bitene kadar true kalır.
+     * Kayıtlı oturumla açılışta hiç true olmaz; kullanıcı kuruluma zorlanmaz.
+     */
+    var onboarding by mutableStateOf(false)
+        private set
+
+    /** GitHub profilinden gelen bilgiler; commit kimliğini önceden doldurmak için kullanılır. */
+    var profileName by mutableStateOf<String?>(null)
+        private set
+    var profileEmail by mutableStateOf<String?>(null)
+        private set
+    private var profileId: Long? = null
+
+    /** Ad: profildeki ad, yoksa kullanıcı adı. */
+    val suggestedAuthorName: String get() = profileName?.takeIf { it.isNotBlank() } ?: username.orEmpty()
+
+    /**
+     * E-posta: herkese açık e-posta, yoksa GitHub'ın gizlilik dostu noreply adresi
+     * (commit'ler hesabınıza bağlanır, gerçek adresiniz açığa çıkmaz).
+     */
+    val suggestedAuthorEmail: String
+        get() {
+            profileEmail?.takeIf { it.isNotBlank() }?.let { return it }
+            val id = profileId
+            val login = username
+            return if (id != null && login != null) "$id+$login@users.noreply.github.com" else ""
+        }
+
+    fun beginOnboarding() { onboarding = true }
+    fun finishOnboarding() { onboarding = false }
+
+    fun clearError() { errorMessage = null }
 
     private var deviceCancelled = false
     private var customClientId by mutableStateOf<String?>(null)
@@ -109,6 +144,9 @@ class AuthProvider(private val storage: StorageService, private val github: GitH
             val user = github.verifyUser(clean)
             username = user["login"].asStr
             avatarUrl = user["avatar_url"].asStr
+            profileName = user["name"].asStr
+            profileEmail = user["email"].asStr
+            profileId = user["id"].asLong
             this.token = clean
             this.authorName = authorName?.trim()
             this.authorEmail = authorEmail?.trim()
@@ -184,6 +222,10 @@ class AuthProvider(private val storage: StorageService, private val github: GitH
         avatarUrl = null
         authorName = null
         authorEmail = null
+        profileName = null
+        profileEmail = null
+        profileId = null
+        onboarding = false
         errorMessage = null
     }
 }

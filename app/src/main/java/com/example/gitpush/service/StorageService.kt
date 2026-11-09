@@ -128,7 +128,7 @@ class StorageService(context: Context) {
 
     // ── Tema ──
     suspend fun saveThemeMode(mode: String) = io { prefs.edit().putString(KEY_THEME_MODE, mode).apply() }
-    suspend fun getThemeMode(): String = io { prefs.getString(KEY_THEME_MODE, null) ?: "system" }
+    suspend fun getThemeMode(): String = io { prefs.getString(KEY_THEME_MODE, null) ?: "dark" }
 
     // ── Kısayollar ──
     private fun readStringList(key: String): List<String>? {

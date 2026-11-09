@@ -10,12 +10,12 @@ import kotlinx.coroutines.launch
 enum class ThemeMode(val key: String) { System("system"), Light("light"), Dark("dark") }
 
 class ThemeProvider(private val storage: StorageService, private val scope: CoroutineScope) {
-    var mode by mutableStateOf(ThemeMode.System)
+    var mode by mutableStateOf(ThemeMode.Dark)
         private set
 
     suspend fun initTheme() {
         val s = storage.getThemeMode()
-        mode = ThemeMode.values().firstOrNull { it.key == s } ?: ThemeMode.System
+        mode = ThemeMode.values().firstOrNull { it.key == s } ?: ThemeMode.Dark
     }
 
     fun setThemeMode(m: ThemeMode) {

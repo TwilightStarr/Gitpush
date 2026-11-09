@@ -19,7 +19,7 @@
 
 ## Bilinen sınırlar
 - Uygulama kilidi açıkken ekran görüntüsü engellenmez (`FLAG_SECURE` eklenmemiştir).
-- Release derlemesi varsayılan olarak debug anahtarıyla imzalanır; dağıtımdan önce kendi keystore'unuzla imzalayın.
+- Release APK'sı, GitHub secret'larındaki sabit keystore ile imzalanır (bkz. README → Sabit imza). Keystore dosyasını ve şifrelerini asla depoya koymayın; kaybederseniz mevcut kurulumların üzerine güncelleme yapılamaz.
 - 50 MB üstü dosyalar gönderilmez; çok büyük repolarda GitHub ağaç yanıtı kesilebilir ve bazı denetimler sınırlı yapılır.
 
 ## Güvenlik açığı bildirimi

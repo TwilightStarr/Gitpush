@@ -5,6 +5,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Etiket (tag) ve GitHub Release oluşturmak için gerekli.
+permissions:
+  contents: write
+
+# Sürüm hesabı sıralı yapılmalı: iki çalışma aynı sürüm numarasını üretmesin.
+concurrency:
+  group: build-and-release
+  cancel-in-progress: false
+
 jobs:
   build:
     # Pinned so the ubuntu-latest -> Ubuntu 26 migration cannot change the build unexpectedly.
@@ -14,6 +23,12 @@ jobs:
         shell: bash   # bash with -eo pipefail, so failures are not hidden by "| tee"
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # sürüm hesabı için commit geçmişi ve etiketler gerekir
+
+      - name: Compute version
+        id: version
+        run: python3 .github/scripts/next_version.py
 
       - uses: actions/setup-java@v5
         with:
@@ -27,10 +42,31 @@ jobs:
       - name: Unit tests
         run: gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee unit-tests.log
 
+      # Sabit imza anahtarını secret'tan çözer. Release yayımlanacaksa anahtar zorunludur;
+      # yoksa debug anahtarıyla imzalı (güncelleme olarak kurulamayan) bir release çıkmasın diye hata verir.
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          RELEASE: ${{ steps.version.outputs.release }}
+        run: |
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            echo "KEYSTORE_FILE=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
+          elif [ "${RELEASE}" = "true" ]; then
+            echo "::error::KEYSTORE_BASE64 secret'ı tanımlı değil. Sabit imza olmadan release yayımlanmaz (README: 'Sabit imza')."
+            exit 1
+          else
+            echo "::warning::KEYSTORE_BASE64 yok; bu derleme debug anahtarıyla imzalanacak."
+          fi
+
       - name: Release APK
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-        run: gradle :app:assembleRelease --no-daemon -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" 2>&1 | tee release-build.log
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee release-build.log
 
       - name: Collect warnings and errors
         if: always()
@@ -51,16 +87,33 @@ jobs:
             done
           } > "uyarılar-ve-hatalar.txt"
 
+      # v6+ runs on Node.js 24 (v5 still ran on Node.js 20 -> deprecation warning).
       - name: Upload warnings and errors report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: warnings-and-errors
           path: uyarılar-ve-hatalar.txt
           if-no-files-found: warn
 
       - name: Upload APK
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: gitpush-apk
           path: app/build/outputs/apk/release/*.apk
+
+      # Yalnızca main dalında, testler ve derleme başarılıysa ve sürüm artışı gerekiyorsa çalışır.
+      # `gh` runner'da hazır gelir; üçüncü taraf action (ve Node sürümü) gerektirmez.
+      - name: Publish GitHub Release
+        if: steps.version.outputs.release == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          cp "$apk" "Gitpush-${TAG}.apk"
+          gh release create "${TAG}" "Gitpush-${TAG}.apk" \
+            --target "${GITHUB_SHA}" \
+            --title "Gitpush ${TAG}" \
+            --notes-file release-notes.md \
+            --latest

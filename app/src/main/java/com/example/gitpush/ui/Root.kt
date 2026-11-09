@@ -45,7 +45,7 @@ import com.example.gitpush.ui.screens.MultiFileScreen
 import com.example.gitpush.ui.screens.PreviewScreen
 import com.example.gitpush.ui.screens.RepoPickerScreen
 import com.example.gitpush.ui.screens.ResultScreen
-import com.example.gitpush.ui.screens.SetupScreen
+import com.example.gitpush.ui.screens.OnboardingScreen
 import com.example.gitpush.ui.screens.ZipTransferScreen
 import com.example.gitpush.ui.theme.GitpushTheme
 import androidx.compose.ui.graphics.Color as ComposeColor
@@ -74,8 +74,8 @@ fun GitpushRoot(ready: Boolean) {
                 // Kök geri tuşu: yığın doluysa en üstteki ekranı kapatır (ekranlar kendi BackHandler'ını sonra ekler).
                 BackHandler(enabled = nav.stack.isNotEmpty()) { nav.pop() }
 
-                if (!g.auth.isAuthenticated) {
-                    SetupScreen()
+                if (!g.auth.isAuthenticated || g.auth.onboarding) {
+                    OnboardingScreen()
                 } else {
                     val total = nav.stack.size + 1
                     KeepAlive(visible = nav.stack.isEmpty()) {
