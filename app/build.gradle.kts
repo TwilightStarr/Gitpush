@@ -1,3 +1,6 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,7 +11,7 @@ plugins {
 // CI, sürümü otomatik hesaplar (.github/scripts/next_version.py) ve -PVERSION_NAME=X.Y.Z ile verir.
 // Verilmezse (yerel derleme) version.properties içindeki taban sürüm "-dev" ekiyle kullanılır.
 // versionCode, sürümden türetilir: MAJOR*1_000_000 + MINOR*1_000 + PATCH  (her yeni sürümde artar).
-val baseVersion: String = java.util.Properties()
+val baseVersion: String = Properties()
     .also { p -> rootProject.file("version.properties").inputStream().use { p.load(it) } }
     .getProperty("BASE_VERSION")
 val appVersionName: String = (project.findProperty("VERSION_NAME") as String?)
@@ -63,7 +66,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
-    kotlinOptions { jvmTarget = "17" }
 
     buildFeatures {
         compose = true
@@ -108,4 +110,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
 }
