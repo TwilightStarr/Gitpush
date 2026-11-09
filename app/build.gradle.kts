@@ -3,7 +3,6 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -21,7 +20,7 @@ val appVersionCode: Int = appVersionName.substringBefore('-').split('.').map { i
 
 android {
     namespace = "com.example.gitpush"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.example.gitpush"
