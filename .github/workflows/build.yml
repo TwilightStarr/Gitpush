@@ -7,28 +7,60 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned so the ubuntu-latest -> Ubuntu 26 migration cannot change the build unexpectedly.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash   # bash with -eo pipefail, so failures are not hidden by "| tee"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "8.10.2"
 
-      - name: Birim testleri
-        run: gradle :app:testDebugUnitTest --no-daemon
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon 2>&1 | tee unit-tests.log
 
       - name: Release APK
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-        run: gradle :app:assembleRelease --no-daemon -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}"
+        run: gradle :app:assembleRelease --no-daemon -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" 2>&1 | tee release-build.log
 
-      - uses: actions/upload-artifact@v4
+      - name: Collect warnings and errors
+        if: always()
+        run: |
+          {
+            echo "=== WARNINGS AND ERRORS REPORT ==="
+            echo "Run: ${GITHUB_RUN_ID}  Commit: ${GITHUB_SHA}"
+            echo "Date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo
+            for f in unit-tests.log release-build.log; do
+              echo "----- ${f} -----"
+              if [ -f "$f" ]; then
+                grep -E '^(w|e): |^ERROR|^Error:|^FAILURE|^BUILD FAILED|What went wrong|Execution failed|^Missing class|^warning:|^Warning:|WARNING|deprecated|Unable to ' "$f" || echo "(no warnings or errors found)"
+              else
+                echo "(log file not found - the step did not run)"
+              fi
+              echo
+            done
+          } > "uyarılar-ve-hatalar.txt"
+
+      - name: Upload warnings and errors report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: warnings-and-errors
+          path: uyarılar-ve-hatalar.txt
+          if-no-files-found: warn
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v5
         with:
           name: gitpush-apk
           path: app/build/outputs/apk/release/*.apk
