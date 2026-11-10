@@ -2,6 +2,8 @@ package com.example.gitpush.service
 
 import android.util.Base64
 import com.example.gitpush.model.ActionRun
+import com.example.gitpush.model.ActionSecret
+import com.example.gitpush.model.SecretRules
 import com.example.gitpush.model.GitFileItem
 import com.example.gitpush.model.GitFileStatus
 import com.example.gitpush.model.GitHubBranch
@@ -14,6 +16,7 @@ import com.example.gitpush.model.RepoNode
 import com.example.gitpush.model.RepoTreeIndex
 import com.example.gitpush.model.RepoTreeResult
 import com.example.gitpush.model.TreeEntry
+import com.example.gitpush.util.SealedBox
 import com.example.gitpush.util.SecretCandidate
 import com.example.gitpush.util.SecretGuard
 import com.example.gitpush.util.asArr
@@ -706,6 +709,71 @@ class GitHubService(
             body = buildJsonObject { put("ref", ref) },
         )
         if (res.code != 204) throw apiError(res)
+    }
+
+    // ───────────────────────── Actions secret'ları ─────────────────────────
+
+    private fun secretsError(res: HttpResult): GitHubApiException {
+        if (res.code == 401 || isRateLimited(res)) return apiError(res)
+        if (res.code == 403 || res.code == 404) {
+            val detail = messageFrom(res.body).ifEmpty { "HTTP ${res.code}" }
+            return GitHubApiException(
+                res.code,
+                "Bu depoda secret yönetilemedi. Token'da `repo` yetkisi ve depoda yazma/yönetici erişimi " +
+                    "gerekir (fine-grained token için 'Secrets: Read and write'). Ayrıntı: $detail",
+            )
+        }
+        return apiError(res)
+    }
+
+    suspend fun listActionSecrets(token: String, owner: String, repo: String): List<ActionSecret> {
+        val res = send("GET", "${repoPath(owner, repo)}/actions/secrets?per_page=100", token)
+        if (res.code != 200) throw secretsError(res)
+        val arr = jsonObj(res)["secrets"].asArr ?: JsonArray(emptyList())
+        return arr.mapNotNull { it.asObj?.let { o -> ActionSecret.fromJson(o) } }
+            .sortedBy { it.name.lowercase() }
+    }
+
+    /**
+     * Secret'ı depo açık anahtarıyla şifreleyip yazar (yoksa oluşturur, varsa üzerine yazar).
+     * Değer cihazdan şifrelenmeden çıkmaz. Dönüş: true = yeni oluşturuldu, false = güncellendi.
+     */
+    suspend fun putActionSecret(token: String, owner: String, repo: String, name: String, value: String): Boolean {
+        SecretRules.validateName(name)?.let { throw GitHubApiException(0, it) }
+        SecretRules.validateValue(value)?.let { throw GitHubApiException(0, it) }
+        val base = repoPath(owner, repo)
+
+        val keyRes = send("GET", "$base/actions/secrets/public-key", token)
+        if (keyRes.code != 200) throw secretsError(keyRes)
+        val keyJson = jsonObj(keyRes)
+        val keyId = keyJson["key_id"].asStr
+        val keyB64 = keyJson["key"].asStr
+        if (keyId == null || keyB64 == null) throw GitHubApiException(keyRes.code, "GitHub açık anahtarı okunamadı.")
+        val publicKey = try {
+            Base64.decode(keyB64, Base64.DEFAULT)
+        } catch (e: IllegalArgumentException) {
+            ByteArray(0)
+        }
+        if (publicKey.size != 32) throw GitHubApiException(0, "GitHub açık anahtarı geçersiz.")
+
+        val sealed = SealedBox.seal(value.toByteArray(Charsets.UTF_8), publicKey)
+        val res = send(
+            "PUT",
+            "$base/actions/secrets/${encodeComponent(SecretRules.normalizeName(name))}",
+            token,
+            body = buildJsonObject {
+                put("encrypted_value", Base64.encodeToString(sealed, Base64.NO_WRAP))
+                put("key_id", keyId)
+            },
+        )
+        if (res.code != 201 && res.code != 204) throw secretsError(res)
+        return res.code == 201
+    }
+
+    suspend fun deleteActionSecret(token: String, owner: String, repo: String, name: String) {
+        SecretRules.validateName(name)?.let { throw GitHubApiException(0, it) }
+        val res = send("DELETE", "${repoPath(owner, repo)}/actions/secrets/${encodeComponent(SecretRules.normalizeName(name))}", token)
+        if (res.code != 204) throw secretsError(res)
     }
 
     // ───────────────────────── Dosya işlemleri ─────────────────────────

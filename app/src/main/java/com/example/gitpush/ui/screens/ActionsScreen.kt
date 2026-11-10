@@ -12,9 +12,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Source
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -95,6 +97,12 @@ fun ActionsScreen(isActive: Boolean) {
                 }
             }
         }
+        Column(
+            Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+        SmallFloatingActionButton(onClick = { g.nav.push(Route.Secrets) }) { Icon(Icons.Filled.VpnKey, "Secret'lar") }
         ExtendedFloatingActionButton(
             onClick = {
                 scope.launch {
@@ -112,7 +120,7 @@ fun ActionsScreen(isActive: Boolean) {
                 }
             },
             icon = { Icon(Icons.Filled.PlayArrow, null) }, text = { Text("Tetikle") },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
         )
+        }
     }
 }

@@ -43,43 +43,62 @@ jobs:
         id: tests
         run: gradle :app:testDebugUnitTest --no-daemon --warning-mode all 2>&1 | tee unit-tests.log
 
-      # Sabit imza anahtarını secret'tan çözer. Release yayımlanacaksa anahtar zorunludur;
-      # yoksa debug anahtarıyla imzalı (güncelleme olarak kurulamayan) bir release çıkmasın diye hata verir.
+      # Sabit imza anahtarını secret'tan çözer ve doğrular. Secret eksik veya hatalıysa HATA VERMEZ:
+      # `signed=false` çıktısı verilir, aşağıda imzasız (debug) APK derlenir. Sebep All-reports.txt'e yazılır.
       - name: Prepare signing key
         id: key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          RELEASE: ${{ steps.version.outputs.release }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "${KEYSTORE_BASE64}" | tr -d '[:space:]' | base64 -d > "${RUNNER_TEMP}/release.keystore"
-            # Erken doğrulama: hangi secret yanlış olduğunu net söyler (değerleri yazdırmaz).
-            if ! keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" >/dev/null 2>&1; then
-              echo "::error::Keystore açılamadı: KEYSTORE_BASE64 bozuk veya KEYSTORE_PASSWORD yanlış."; exit 1
-            fi
-            if ! keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" >/dev/null 2>&1; then
-              echo "::error::KEY_ALIAS yanlış. Keystore'daki takma adlar:"
-              keytool -list -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" 2>/dev/null | grep -i 'trustedCertEntry\|PrivateKeyEntry' | cut -d, -f1
-              exit 1
-            fi
-            if ! keytool -keypasswd -keystore "${RUNNER_TEMP}/release.keystore" -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" -keypass "${KEY_PASSWORD}" -new "${KEY_PASSWORD}" >/dev/null 2>&1; then
-              echo "::error::KEY_PASSWORD yanlış (PKCS12 için KEYSTORE_PASSWORD ile aynı olmalı)."; exit 1
-            fi
-            echo "KEYSTORE_FILE=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
-          elif [ "${RELEASE}" = "true" ]; then
-            echo "::error::KEYSTORE_BASE64 secret'ı tanımlı değil. Sabit imza olmadan release yayımlanmaz (README: 'Sabit imza')."
-            exit 1
+          KS="${RUNNER_TEMP}/release.keystore"
+          fallback() {
+            echo "::warning::${1} Debug APK derlenecek (release imzası atlandı)."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "${1}" > signing-status.txt
+            rm -f "${KS}"
+            exit 0
+          }
+          [ -n "${KEYSTORE_BASE64}" ]   || fallback "KEYSTORE_BASE64 secret'ı tanımlı değil."
+          [ -n "${KEYSTORE_PASSWORD}" ] || fallback "KEYSTORE_PASSWORD secret'ı tanımlı değil."
+          [ -n "${KEY_ALIAS}" ]         || fallback "KEY_ALIAS secret'ı tanımlı değil."
+          [ -n "${KEY_PASSWORD}" ]      || fallback "KEY_PASSWORD secret'ı tanımlı değil."
+
+          echo "${KEYSTORE_BASE64}" | tr -d '[:space:]' | base64 -d > "${KS}" 2>/dev/null \
+            || fallback "KEYSTORE_BASE64 çözülemedi (geçerli bir base64 değil)."
+          # Değerleri yazdırmadan hangi secret'ın yanlış olduğunu söyler.
+          keytool -list -keystore "${KS}" -storepass "${KEYSTORE_PASSWORD}" >/dev/null 2>&1 \
+            || fallback "Keystore açılamadı: KEYSTORE_BASE64 bozuk veya KEYSTORE_PASSWORD yanlış."
+          keytool -list -keystore "${KS}" -storepass "${KEYSTORE_PASSWORD}" -alias "${KEY_ALIAS}" >/dev/null 2>&1 \
+            || fallback "KEY_ALIAS yanlış. Keystore'daki takma adlar: $(keytool -list -keystore "${KS}" -storepass "${KEYSTORE_PASSWORD}" 2>/dev/null | grep -i 'PrivateKeyEntry' | cut -d, -f1 | tr '\n' ' ')"
+          # Anahtar şifresi testi. `keytool -keypasswd` PKCS12'de DESTEKLENMEZ ("not supported if -storetype is
+          # PKCS12"); eski kontrol bu yüzden doğru şifreyle bile "KEY_PASSWORD yanlış" diyordu.
+          STYPE="$(keytool -list -keystore "${KS}" -storepass "${KEYSTORE_PASSWORD}" 2>/dev/null | sed -n 's/^Keystore type: *//p' | head -n 1 | tr 'A-Z' 'a-z')"
+          if [ "${STYPE}" = "pkcs12" ]; then
+            # PKCS12'de Java anahtar şifresi olarak mağaza şifresini kullanır; ikisi aynı olmalı.
+            [ "${KEY_PASSWORD}" = "${KEYSTORE_PASSWORD}" ] \
+              || fallback "KEY_PASSWORD yanlış: PKCS12 keystore'da KEYSTORE_PASSWORD ile aynı olmalı."
           else
-            echo "::warning::KEYSTORE_BASE64 yok; bu derleme debug anahtarıyla imzalanacak."
+            # JKS: anahtarı kopyaya aktarmayı dener; yanlış anahtar şifresinde hata verir.
+            rm -f "${KS}.check"
+            keytool -importkeystore -srckeystore "${KS}" -srcstorepass "${KEYSTORE_PASSWORD}" \
+              -srcalias "${KEY_ALIAS}" -srckeypass "${KEY_PASSWORD}" \
+              -destkeystore "${KS}.check" -deststoretype PKCS12 \
+              -deststorepass "${KEYSTORE_PASSWORD}" -destkeypass "${KEYSTORE_PASSWORD}" >/dev/null 2>&1 \
+              || { rm -f "${KS}.check"; fallback "KEY_PASSWORD yanlış."; }
+            rm -f "${KS}.check"
           fi
+
+          echo "KEYSTORE_FILE=${KS}" >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "Release imzası doğrulandı." > signing-status.txt
 
       - name: Release APK
         id: release
-        # Testler başarısız olsa bile release derlemesi de raporlansın.
-        if: ${{ !cancelled() }}
+        # İmza doğrulandıysa release; testler başarısız olsa bile release derlemesi de raporlansın.
+        if: ${{ !cancelled() && steps.key.outputs.signed == 'true' }}
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
           APP_VERSION: ${{ steps.version.outputs.version }}
@@ -87,6 +106,15 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon --warning-mode all -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee release-build.log
+
+      # İmza secret'ları eksik/hatalıysa: debug APK (Android'in debug anahtarıyla imzalı).
+      - name: Debug APK (imza atlandı)
+        id: debug
+        if: ${{ !cancelled() && steps.key.outputs.signed != 'true' }}
+        env:
+          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: gradle :app:assembleDebug --no-daemon --warning-mode all -PGITHUB_CLIENT_ID="${GITHUB_CLIENT_ID}" -PVERSION_NAME="${APP_VERSION}" 2>&1 | tee debug-build.log
 
       - name: Upload APK
         id: upload_apk
@@ -99,7 +127,9 @@ jobs:
       # Yalnızca main dalında, testler ve derleme başarılıysa ve sürüm artışı gerekiyorsa çalışır.
       # `gh` runner'da hazır gelir; üçüncü taraf action (ve Node sürümü) gerektirmez.
       - name: Publish GitHub Release
-        if: steps.version.outputs.release == 'true' && github.ref == 'refs/heads/main'
+        # Debug APK her derlemede başka bir anahtarla imzalanır; güncelleme olarak kurulamaz, bu yüzden yayımlanmaz
+        # (APK yine de 'gitpush-apk' artifact'ında indirilebilir).
+        if: steps.version.outputs.release == 'true' && github.ref == 'refs/heads/main' && steps.key.outputs.signed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -125,6 +155,8 @@ jobs:
           OUT_TESTS: ${{ steps.tests.outcome }}
           OUT_KEY: ${{ steps.key.outcome }}
           OUT_RELEASE: ${{ steps.release.outcome }}
+          OUT_DEBUG: ${{ steps.debug.outcome }}
+          OUT_SIGNED: ${{ steps.key.outputs.signed }}
           OUT_UPLOAD: ${{ steps.upload_apk.outcome }}
           OUT_PUBLISH: ${{ steps.publish.outcome }}
         run: |
@@ -138,7 +170,10 @@ jobs:
             echo "Compute version : ${OUT_VERSION}"
             echo "Unit tests      : ${OUT_TESTS}"
             echo "Signing key     : ${OUT_KEY}"
+            echo "Release signed  : ${OUT_SIGNED:-unknown}"
+            echo "Signing detail  : $(cat signing-status.txt 2>/dev/null || echo '(yok)')"
             echo "Release APK     : ${OUT_RELEASE}"
+            echo "Debug APK       : ${OUT_DEBUG}"
             echo "Upload APK      : ${OUT_UPLOAD}"
             echo "Publish release : ${OUT_PUBLISH}"
             echo
@@ -148,7 +183,7 @@ jobs:
             grep -E 'com.android.application|plugin.compose' build.gradle.kts || true
             grep -E 'compileSdk|targetSdk|minSdk' app/build.gradle.kts || true
             echo
-            for f in unit-tests.log release-build.log publish.log; do
+            for f in unit-tests.log release-build.log debug-build.log publish.log; do
               echo "=================== ${f} ==================="
               if [ ! -f "$f" ]; then
                 echo "(log file not found - the step did not run)"; echo; continue

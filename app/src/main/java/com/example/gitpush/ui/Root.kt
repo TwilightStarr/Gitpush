@@ -44,6 +44,7 @@ import com.example.gitpush.ui.screens.MainShell
 import com.example.gitpush.ui.screens.MultiFileScreen
 import com.example.gitpush.ui.screens.PreviewScreen
 import com.example.gitpush.ui.screens.RepoPickerScreen
+import com.example.gitpush.ui.screens.SecretsScreen
 import com.example.gitpush.ui.screens.ResultScreen
 import com.example.gitpush.ui.screens.OnboardingScreen
 import com.example.gitpush.ui.screens.ZipTransferScreen
@@ -118,6 +119,7 @@ private fun RouteContent(route: Route) {
         Route.RepoPicker -> RepoPickerScreen()
         Route.Zip -> ZipTransferScreen()
         Route.Multi -> MultiFileScreen()
+        Route.Secrets -> SecretsScreen()
         is Route.Preview -> PreviewScreen(route.source, route.commitMessage)
         is Route.Result -> ResultScreen(route)
         is Route.FileDetail -> FileDetailScreen(route.entry)

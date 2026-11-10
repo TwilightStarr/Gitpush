@@ -42,6 +42,7 @@ Android için Jetpack Compose ile yazılmıştır.
 
 **GitHub Actions**
 - Son çalışmalar, çalışırken otomatik yenileme, `workflow_dispatch` ile tetikleme, tarayıcıda açma
+- **Secret yönetimi:** Actions sekmesindeki anahtar düğmesiyle erişebildiğiniz *herhangi bir* depoya (listeden seçin ya da `sahip/depo` yazın) secret ekleyin, güncelleyin, silin. Değer cihazda GitHub'ın açık anahtarıyla şifrelenir (libsodium sealed box), düz metin olarak gönderilmez ve GitHub değeri asla geri vermez. Keystore dosyasını seçip `KEYSTORE_BASE64` değerini otomatik üretebilirsiniz. Token'da `repo` yetkisi gerekir.
 
 **Güvenlik ve gizlilik**
 - 6 haneli PIN kilidi (tuzlu, 20.000 tur SHA-256; zayıf PIN reddi; hatalı denemede kalıcı artan bekleme)
@@ -117,7 +118,13 @@ Anahtar bir kez oluşturulur ve GitHub secret olarak saklanır (depoya **asla** 
    | `KEY_ALIAS` | `gitpush` (1. adımdaki `-alias`) |
    | `KEY_PASSWORD` | anahtar şifresi (genelde keystore şifresiyle aynı) |
 
-`KEYSTORE_BASE64` yoksa release yayımlanmaz, workflow açık bir hata mesajıyla durur.
+Bu secret'ları uygulamadan da ekleyebilirsiniz: **Actions → anahtar düğmesi**.
+
+**Secret eksik veya yanlışsa ne olur?** Workflow durmaz: imza adımı atlanır, **debug APK** derlenir ve `gitpush-apk` artifact'ında indirilir.
+Nedeni (hangi secret'ın eksik/yanlış olduğu) `All-reports.txt` içindeki `Signing detail` satırında yazar.
+Debug APK her derlemede farklı anahtarla imzalandığı için güncelleme olarak kurulamaz; bu yüzden GitHub Release yalnızca imza doğrulandığında yayımlanır.
+
+**PKCS12 notu:** Keystore PKCS12 ise (JDK 9+ varsayılanı) `KEY_PASSWORD`, `KEYSTORE_PASSWORD` ile aynı olmalıdır.
 
 ## Token yetkileri
 

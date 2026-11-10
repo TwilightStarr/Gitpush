@@ -55,6 +55,7 @@ class OkHttpTransport(private val client: OkHttpClient = OkHttpClient()) : HttpT
         when (method) {
             "GET" -> builder.get()
             "POST" -> builder.post(reqBody ?: "".toRequestBody(jsonType))
+            "PUT" -> builder.put(reqBody ?: "".toRequestBody(jsonType))
             "PATCH" -> builder.patch(reqBody ?: "".toRequestBody(jsonType))
             "DELETE" -> if (reqBody != null) builder.delete(reqBody) else builder.delete()
             else -> throw IllegalArgumentException("Desteklenmeyen HTTP yöntemi: $method")

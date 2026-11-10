@@ -9,6 +9,7 @@ sealed interface Route {
     data object RepoPicker : Route
     data object Zip : Route
     data object Multi : Route
+    data object Secrets : Route
     data class Preview(val source: PreviewSource, val commitMessage: String) : Route
     data class Result(
         val result: com.example.gitpush.model.PushResult,
