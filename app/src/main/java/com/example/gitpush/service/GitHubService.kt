@@ -99,7 +99,16 @@ class GitHubService(
             val t = 60_000L + encoded * 1000 / MIN_UPLOAD_BYTES_PER_SEC
             return t.coerceIn(BLOB_TIMEOUT_MS, BLOB_MAX_TIMEOUT_MS)
         }
-        private const val MAX_ATTEMPTS = 3
+        private const val MAX_ATTEMPTS = 4
+        /** GitHub ikincil (secondary) oran sınırı genelde 60 sn bekletir; bunu bekleyip devam ederiz. */
+        private const val MAX_RETRY_WAIT_SEC = 120L
+        /** Tek ağaç isteğindeki en fazla girdi ve satır içi içerik boyutu. */
+        private const val TREE_CHUNK_ENTRIES = 150
+        private const val TREE_CHUNK_BYTES = 1_000_000L
+        /** Blob istekleri arasındaki bekleme: GitHub içerik oluşturmada ~80 istek/dk sınırı uygular. */
+        private const val BLOB_PACING_MS = 900L
+        /** Bu sayıdan az blob varsa bekleme uygulanmaz. */
+        private const val BLOB_PACING_FREE = 20
         private const val BLOB_CONCURRENCY = 2
         private const val MAX_BLOB_BYTES = 50 * 1024 * 1024
 
@@ -113,6 +122,24 @@ class GitHubService(
             md.update("blob ${bytes.size}\u0000".toByteArray(Charsets.UTF_8))
             md.update(bytes)
             return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+
+        /**
+         * Baytlar birebir geri üretilebilen, boş olmayan UTF-8 metinse String döndürür (tree isteğinde
+         * `content` olarak gönderilebilir); aksi halde null (blob olarak yüklenir).
+         */
+        internal fun decodeInlineText(bytes: ByteArray): String? {
+            if (bytes.isEmpty()) return null
+            for (b in bytes) if (b.toInt() == 0) return null
+            return try {
+                val text = Charsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+                if (text.toByteArray(Charsets.UTF_8).contentEquals(bytes)) text else null
+            } catch (_: java.nio.charset.CharacterCodingException) {
+                null
+            }
         }
 
         private fun defaultMode(path: String): String {
@@ -153,14 +180,14 @@ class GitHubService(
     private fun retryDelayMs(res: HttpResult, attempt: Int): Long? {
         val retryAfter = res.headers["retry-after"]?.trim()?.toIntOrNull()
         if (retryAfter != null) {
-            if (retryAfter > 60) return null
+            if (retryAfter > MAX_RETRY_WAIT_SEC) return null
             return (if (retryAfter < 1) 1 else retryAfter) * 1000L
         }
         if (res.headers["x-ratelimit-remaining"] == "0") {
             val reset = res.headers["x-ratelimit-reset"]?.trim()?.toLongOrNull()
             if (reset != null) {
                 val secs = reset - nowMs() / 1000
-                if (secs > 60) return null
+                if (secs > MAX_RETRY_WAIT_SEC) return null
                 return (if (secs < 1) 1 else secs + 1) * 1000L
             }
         }
@@ -577,54 +604,76 @@ class GitHubService(
             return PushResult(noChanges = true, skipped = skipped, warnings = warnings)
         }
 
-        // 7) Blob'ları yükle (sınırlı eşzamanlılık)
+        // 7) Metin dosyaları ağaç isteğine satır içi (content) konur -> dosya başına ayrı istek yok.
+        //    Yalnızca ikili / boş / geçerli UTF-8 olmayan dosyalar blob olarak yüklenir.
+        //    (1000+ dosyalı projelerde tek tek blob isteği GitHub'ın içerik oluşturma sınırına takılıyordu.)
+        val inlineTexts = arrayOfNulls<String>(toUpload.size)
+        val blobIdx = ArrayList<Int>()
+        for (j in toUpload.indices) {
+            val text = decodeInlineText(toUpload[j].bytes)
+            if (text != null) inlineTexts[j] = text else blobIdx.add(j)
+        }
+
         val workTotal = toUpload.size
-        val blobShas = arrayOfNulls<String>(workTotal)
-        val processed = AtomicInteger(0)
-        onProgress("Dosyalar yükleniyor (0/$workTotal)", 0, workTotal)
-        var i = 0
-        while (i < workTotal) {
+        val blobShas = arrayOfNulls<String>(toUpload.size)
+        val processed = AtomicInteger(toUpload.size - blobIdx.size)
+        onProgress("Dosyalar hazırlanıyor (${processed.get()}/$workTotal)", processed.get(), workTotal)
+        val paced = blobIdx.size > BLOB_PACING_FREE
+        var bi = 0
+        while (bi < blobIdx.size) {
             // Büyük dosyalar bant genişliğini paylaşıp zaman aşımına düşmesin diye tek tek yüklenir.
-            var end = i + 1
-            var batchBytes = toUpload[i].bytes.size.toLong()
-            while (end < workTotal && end - i < BLOB_CONCURRENCY &&
-                batchBytes + toUpload[end].bytes.size <= PARALLEL_BATCH_BYTES
+            val first = blobIdx[bi]
+            var end = bi + 1
+            var batchBytes = toUpload[first].bytes.size.toLong()
+            while (!paced && end < blobIdx.size && end - bi < BLOB_CONCURRENCY &&
+                batchBytes + toUpload[blobIdx[end]].bytes.size <= PARALLEL_BATCH_BYTES
             ) {
-                batchBytes += toUpload[end].bytes.size
+                batchBytes += toUpload[blobIdx[end]].bytes.size
                 end++
             }
             coroutineScope {
-                (i until end).map { j ->
+                (bi until end).map { k ->
                     async {
+                        val j = blobIdx[k]
                         blobShas[j] = createBlob(token, owner, repo, toUpload[j].bytes, workflowHint = touchesWorkflows)
                         val n = processed.incrementAndGet()
                         onProgress("Dosyalar yükleniyor ($n/$workTotal)", n, workTotal)
                     }
                 }.awaitAll()
             }
-            i = end
+            bi = end
+            if (paced && bi < blobIdx.size) sleep(BLOB_PACING_MS)
         }
 
-        // 8) Ağaç
-        val treeEntries = ArrayList<JsonObject>()
-        for (j in 0 until workTotal) {
-            treeEntries.add(
-                buildJsonObject {
-                    put("path", toUpload[j].path)
-                    put("mode", toUpload[j].mode)
-                    put("type", "blob")
-                    put("sha", blobShas[j])
-                },
+        // 8) Ağaç (parça parça, her parça bir öncekinin üstüne kurulur)
+        class TreeItem(val json: JsonObject, val weight: Long)
+        val treeItems = ArrayList<TreeItem>()
+        for (j in toUpload.indices) {
+            val text = inlineTexts[j]
+            val sha = blobShas[j]
+            treeItems.add(
+                TreeItem(
+                    buildJsonObject {
+                        put("path", toUpload[j].path)
+                        put("mode", toUpload[j].mode)
+                        put("type", "blob")
+                        if (text != null) put("content", text) else put("sha", sha)
+                    },
+                    if (text != null) toUpload[j].bytes.size.toLong() + 200 else 200,
+                ),
             )
         }
         for (path in deletePaths) {
-            treeEntries.add(
-                buildJsonObject {
-                    put("path", path)
-                    put("mode", "100644")
-                    put("type", "blob")
-                    put("sha", JsonNull) // silme
-                },
+            treeItems.add(
+                TreeItem(
+                    buildJsonObject {
+                        put("path", path)
+                        put("mode", "100644")
+                        put("type", "blob")
+                        put("sha", JsonNull) // silme
+                    },
+                    200,
+                ),
             )
         }
 
@@ -632,19 +681,40 @@ class GitHubService(
             throw GitHubApiException(0, "Base tree alınamadı; repo dosyalarının silinmemesi için işlem iptal edildi.")
         }
 
-        onProgress("Git ağacı oluşturuluyor...", workTotal, workTotal)
-        val treeBody = buildJsonObject {
-            put("tree", JsonArray(treeEntries))
-            if (baseTreeSha != null) put("base_tree", baseTreeSha)
+        val chunks = ArrayList<List<JsonObject>>()
+        run {
+            var cur = ArrayList<JsonObject>()
+            var curBytes = 0L
+            for (t in treeItems) {
+                if (cur.isNotEmpty() && (cur.size >= TREE_CHUNK_ENTRIES || curBytes + t.weight > TREE_CHUNK_BYTES)) {
+                    chunks.add(cur)
+                    cur = ArrayList()
+                    curBytes = 0L
+                }
+                cur.add(t.json)
+                curBytes += t.weight
+            }
+            if (cur.isNotEmpty()) chunks.add(cur)
         }
-        val treeRes = send("POST", "${repoPath(owner, repo)}/git/trees", token, body = treeBody)
-        if (treeRes.code != 201) throw apiError(treeRes, touchesWorkflows)
-        val newTreeSha = jsonObj(treeRes)["sha"].asStr ?: throw GitHubApiException(201, "Ağaç yanıtı okunamadı.")
+
+        var newTreeSha: String? = baseTreeSha
+        for ((ci, chunk) in chunks.withIndex()) {
+            onProgress("Git ağacı oluşturuluyor (${ci + 1}/${chunks.size})...", workTotal, workTotal)
+            val treeBody = buildJsonObject {
+                put("tree", JsonArray(chunk))
+                if (newTreeSha != null) put("base_tree", newTreeSha)
+            }
+            val treeRes = send("POST", "${repoPath(owner, repo)}/git/trees", token, body = treeBody, timeoutMs = BLOB_TIMEOUT_MS)
+            if (treeRes.code != 201) throw apiError(treeRes, touchesWorkflows)
+            newTreeSha = jsonObj(treeRes)["sha"].asStr ?: throw GitHubApiException(201, "Ağaç yanıtı okunamadı.")
+            if (ci < chunks.size - 1) sleep(1000) // içerik oluşturan istekler arasında nefes payı
+        }
+        val finalTreeSha = newTreeSha ?: throw GitHubApiException(0, "Git ağacı oluşturulamadı.")
 
         // 9) Güvenlik ağı: eski ağaçtaki hiçbir dosya onaysız kaybolmamalı
         if (baseIndex != null && !baseTruncated) {
             onProgress("Güvenlik denetimi yapılıyor...", workTotal, workTotal)
-            val newTree = getTreeRecursive(token, owner, repo, newTreeSha)
+            val newTree = getTreeRecursive(token, owner, repo, finalTreeSha)
             if (newTree.truncated) {
                 warnings.add("Yeni ağaç çok büyük olduğu için kesildi; dosya kaybı denetimi atlandı.")
             } else {
@@ -671,7 +741,7 @@ class GitHubService(
         onProgress("Commit atılıyor...", workTotal, workTotal)
         val commitRes = send(
             "POST", "${repoPath(owner, repo)}/git/commits", token,
-            body = commitBody(commitMessage, newTreeSha, parentSha, authorName, authorEmail),
+            body = commitBody(commitMessage, finalTreeSha, parentSha, authorName, authorEmail),
         )
         if (commitRes.code != 201) throw apiError(commitRes)
         val newCommitSha = jsonObj(commitRes)["sha"].asStr ?: throw GitHubApiException(201, "Commit yanıtı okunamadı.")
