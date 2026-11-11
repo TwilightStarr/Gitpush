@@ -212,9 +212,10 @@ jobs:
             else
               grep -ho 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "${xmls[@]}" \
                 | awk -F'"' '{t+=$2;s+=$4;f+=$6;e+=$8} END{print "tests="t" skipped="s" failures="f" errors="e}'
-              grep -l '<failure\|<error' "${xmls[@]}" | while read -r x; do
+              # `grep -l` eşleşme yoksa (yani hiç test başarısız değilse) 1 döner; pipefail altında adımı düşürmesin.
+              { grep -l '<failure\|<error' "${xmls[@]}" || true; } | while read -r x; do
                 echo "--- FAILED: $x ---"
-                grep -A15 '<failure\|<error' "$x" | head -n 60
+                grep -A15 '<failure\|<error' "$x" | head -n 60 || true
               done
             fi
           } > "$R" 2>&1
