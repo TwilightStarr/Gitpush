@@ -249,3 +249,14 @@ class LogicTest {
         assertFalse(isSafeExternalUrl("javascript:alert(1)"))
     }
 }
+
+class BlobTimeoutTest {
+    @org.junit.Test
+    fun blobTimeoutScalesWithSize() {
+        val small = com.example.gitpush.service.GitHubService.blobTimeoutMs(10 * 1024)
+        val big = com.example.gitpush.service.GitHubService.blobTimeoutMs(50 * 1024 * 1024)
+        org.junit.Assert.assertEquals(90_000L, small)
+        org.junit.Assert.assertTrue(big > small)
+        org.junit.Assert.assertTrue(big <= 15 * 60_000L)
+    }
+}

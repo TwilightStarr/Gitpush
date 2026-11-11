@@ -30,7 +30,16 @@ interface HttpTransport {
     ): HttpResult
 }
 
-class OkHttpTransport(private val client: OkHttpClient = OkHttpClient()) : HttpTransport {
+class OkHttpTransport(
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        // Varsayılan 10 sn'lik bağlan/oku/yaz süreleri büyük gövdelerde yavaş ağda hataya yol açıyordu.
+        // Toplam süre sınırı istek başına callTimeout ile verilir.
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build(),
+) : HttpTransport {
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 

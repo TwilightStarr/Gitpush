@@ -87,6 +87,18 @@ class GitHubService(
         const val USER_AGENT = "Gitpush"
         private const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val BLOB_TIMEOUT_MS = 90_000L
+        private const val BLOB_MAX_TIMEOUT_MS = 15 * 60_000L
+        /** Zaman aşımı hesabında varsayılan en düşük yükleme hızı (bayt/sn). */
+        private const val MIN_UPLOAD_BYTES_PER_SEC = 40_000L
+        /** Bu boyutun üstündeki dosyalar tek başına (eşzamanlı olmadan) yüklenir. */
+        private const val PARALLEL_BATCH_BYTES = 4L * 1024 * 1024
+
+        /** Dosya boyutuna göre ölçeklenen blob zaman aşımı (base64 ~%33 büyütür). */
+        fun blobTimeoutMs(rawBytes: Int): Long {
+            val encoded = rawBytes.toLong() * 4 / 3
+            val t = 60_000L + encoded * 1000 / MIN_UPLOAD_BYTES_PER_SEC
+            return t.coerceIn(BLOB_TIMEOUT_MS, BLOB_MAX_TIMEOUT_MS)
+        }
         private const val MAX_ATTEMPTS = 3
         private const val BLOB_CONCURRENCY = 2
         private const val MAX_BLOB_BYTES = 50 * 1024 * 1024
@@ -155,12 +167,22 @@ class GitHubService(
         return 2000L * (1 shl (attempt - 1)) // 2, 4 sn
     }
 
+    private fun ioToApiException(e: IOException): GitHubApiException = when (e) {
+        is InterruptedIOException -> // SocketTimeoutException dahil
+            GitHubApiException(0, "İstek zaman aşımına uğradı (yavaş bağlantı veya çok büyük dosya). Bağlantınızı kontrol edip tekrar deneyin.")
+        is UnknownHostException, is ConnectException, is SocketException ->
+            GitHubApiException(0, "İnternet bağlantısı yok veya kesildi. Lütfen ağınızı kontrol edin.")
+        is SSLException -> GitHubApiException(0, "Güvenli bağlantı (SSL) kurulamadı. Ağ ayarlarınızı kontrol edin.")
+        else -> GitHubApiException(0, "Sunucuyla bağlantı kurulamadı. Lütfen tekrar deneyin.")
+    }
+
     private suspend fun send(
         method: String,
         path: String,
         token: String,
         body: JsonElement? = null,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        retryIo: Boolean = method == "GET",
     ): HttpResult {
         checkToken(token)
         val url = "$BASE_URL$path"
@@ -174,18 +196,16 @@ class GitHubService(
                 transport.execute(method, url, headers(token), encoded, timeoutMs)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: InterruptedIOException) { // SocketTimeoutException dahil
-                throw GitHubApiException(0, "İstek zaman aşımına uğradı. Bağlantınızı kontrol edip tekrar deneyin.")
-            } catch (e: UnknownHostException) {
-                throw GitHubApiException(0, "İnternet bağlantısı yok veya kesildi. Lütfen ağınızı kontrol edin.")
-            } catch (e: ConnectException) {
-                throw GitHubApiException(0, "İnternet bağlantısı yok veya kesildi. Lütfen ağınızı kontrol edin.")
-            } catch (e: SocketException) {
-                throw GitHubApiException(0, "İnternet bağlantısı yok veya kesildi. Lütfen ağınızı kontrol edin.")
-            } catch (e: SSLException) {
-                throw GitHubApiException(0, "Güvenli bağlantı (SSL) kurulamadı. Ağ ayarlarınızı kontrol edin.")
             } catch (e: IOException) {
-                throw GitHubApiException(0, "Sunucuyla bağlantı kurulamadı. Lütfen tekrar deneyin.")
+                // Tekrar denemesi güvenli (idempotent) isteklerde geçici ağ hatalarını/zaman aşımını yeniden dene.
+                val transient = e is InterruptedIOException || e is SocketException ||
+                    (e !is UnknownHostException && e !is SSLException)
+                if (retryIo && transient && attempt < MAX_ATTEMPTS) {
+                    sleep(2000L * (1 shl (attempt - 1)))
+                    attempt++
+                    continue
+                }
+                throw ioToApiException(e)
             }
             if (attempt < MAX_ATTEMPTS && isRateLimited(res)) {
                 val wait = retryDelayMs(res, attempt) ?: return res
@@ -341,7 +361,7 @@ class GitHubService(
     }
 
     private suspend fun getTreeRecursive(token: String, owner: String, repo: String, treeSha: String): RepoTreeResult {
-        val res = send("GET", "${repoPath(owner, repo)}/git/trees/$treeSha?recursive=1", token)
+        val res = send("GET", "${repoPath(owner, repo)}/git/trees/$treeSha?recursive=1", token, timeoutMs = BLOB_TIMEOUT_MS)
         if (res.code == 200) {
             val data = jsonObj(res)
             val list = (data["tree"].asArr ?: JsonArray(emptyList())).mapNotNull { e ->
@@ -381,7 +401,8 @@ class GitHubService(
                 put("content", Base64.encodeToString(bytes, Base64.NO_WRAP))
                 put("encoding", "base64")
             },
-            timeoutMs = BLOB_TIMEOUT_MS,
+            timeoutMs = blobTimeoutMs(bytes.size),
+            retryIo = true, // blob oluşturma içerik-adresli olduğundan tekrar denemek güvenlidir
         )
         if (res.code == 201) {
             return jsonObj(res)["sha"].asStr ?: throw GitHubApiException(201, "Blob yanıtı okunamadı.")
@@ -563,7 +584,15 @@ class GitHubService(
         onProgress("Dosyalar yükleniyor (0/$workTotal)", 0, workTotal)
         var i = 0
         while (i < workTotal) {
-            val end = minOf(i + BLOB_CONCURRENCY, workTotal)
+            // Büyük dosyalar bant genişliğini paylaşıp zaman aşımına düşmesin diye tek tek yüklenir.
+            var end = i + 1
+            var batchBytes = toUpload[i].bytes.size.toLong()
+            while (end < workTotal && end - i < BLOB_CONCURRENCY &&
+                batchBytes + toUpload[end].bytes.size <= PARALLEL_BATCH_BYTES
+            ) {
+                batchBytes += toUpload[end].bytes.size
+                end++
+            }
             coroutineScope {
                 (i until end).map { j ->
                     async {
@@ -793,7 +822,7 @@ class GitHubService(
         token: String, owner: String, repo: String, sha: String, maxBytes: Long = 100L * 1024 * 1024,
     ): ByteArray {
         if (!shaRe.matches(sha)) throw GitHubApiException(0, "Geçersiz dosya SHA değeri.")
-        val res = send("GET", "${repoPath(owner, repo)}/git/blobs/$sha", token, timeoutMs = BLOB_TIMEOUT_MS)
+        val res = send("GET", "${repoPath(owner, repo)}/git/blobs/$sha", token, timeoutMs = BLOB_MAX_TIMEOUT_MS, retryIo = true)
         if (res.code != 200) throw apiError(res)
         val data = jsonObj(res)
         val size = data["size"].asLong
