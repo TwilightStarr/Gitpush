@@ -85,11 +85,12 @@ fun PreviewScreen(source: PreviewSource, commitMessage: String) {
         onDispose { view.keepScreenOn = false }
     }
 
-    suspend fun doPush() {
+    suspend fun doPush(allowSecrets: Boolean = false) {
         if (repo == null || branch == null) return
         showProgress = true
         val ok = upload.executePush(
             g.auth.token ?: "", repo.owner, repo.name, branch, commitMessage, plan, g.auth.authorName, g.auth.authorEmail,
+            allowSecrets = allowSecrets,
         )
         if (ok) {
             showProgress = false
@@ -171,6 +172,9 @@ fun PreviewScreen(source: PreviewSource, commitMessage: String) {
                 }
             }) else null,
             onCancel = if (upload.uploadError != null) ({ showProgress = false }) else null,
+            onForce = if (upload.uploadErrorKind == GitHubApiException.KIND_SECRETS) ({
+                scope.launch { doPush(allowSecrets = true) }
+            }) else null,
         )
     }
 }

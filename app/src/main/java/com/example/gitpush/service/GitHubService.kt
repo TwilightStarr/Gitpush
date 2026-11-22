@@ -64,6 +64,9 @@ class GitHubApiException(
 
         /** Güvenlik ağı: beklenmedik dosya kaybı yakalandı. */
         const val KIND_SAFETY_NET = "safety_net"
+
+        /** Hassas görünen dosya tespit edildi; kullanıcı "Yine de gönder" diyebilir. */
+        const val KIND_SECRETS = "secrets"
     }
 }
 
@@ -524,6 +527,7 @@ class GitHubService(
         approvedDeletePaths: Set<String> = emptySet(),
         authorName: String? = null,
         authorEmail: String? = null,
+        allowSecrets: Boolean = false,
         onProgress: (step: String, current: Int, total: Int) -> Unit,
     ): PushResult {
         val planned = ArrayList<PlannedFile>()
@@ -575,7 +579,10 @@ class GitHubService(
         val secretFindings = SecretGuard.scan(
             planned.map { p -> SecretCandidate(p.path, p.source.size) { p.source.readSmall(SecretGuard.MAX_SCAN_BYTES) } },
         )
-        if (secretFindings.isNotEmpty()) throw GitHubApiException(0, SecretGuard.formatError(secretFindings))
+        // Kullanıcı "Yine de gönder" derse (allowSecrets) engellenmez, sonuçta uyarı olarak gösterilir.
+        if (secretFindings.isNotEmpty() && !allowSecrets) {
+            throw GitHubApiException(0, SecretGuard.formatError(secretFindings), kind = GitHubApiException.KIND_SECRETS)
+        }
 
         val progressTotal = filesToPush.size
         val touchesWorkflows = planned.any { it.path.startsWith(".github/workflows/") } ||
@@ -588,6 +595,11 @@ class GitHubService(
         var baseIndex: RepoTreeIndex? = null
         var baseTruncated = false
         val warnings = ArrayList<String>()
+        if (secretFindings.isNotEmpty() && allowSecrets) {
+            val shown = secretFindings.take(5).joinToString(", ") { "${it.path} (${it.reason})" }
+            warnings.add("Hassas olabilecek dosya(lar) gönderildi: $shown" +
+                if (secretFindings.size > 5) " ve ${secretFindings.size - 5} dosya daha" else "")
+        }
         if (parentSha != null) {
             baseTreeSha = getCommitTreeSha(token, owner, repo, parentSha)
             val baseTree = getTreeRecursive(token, owner, repo, baseTreeSha)
@@ -1146,8 +1158,6 @@ class GitHubService(
         if (bytes.size > MAX_BLOB_BYTES) throw GitHubApiException(0, "100 MB üstü dosya gönderilemez.")
         val v = normalizeAndValidateGitPath(path)
         if (!v.isValid) throw GitHubApiException(0, v.error ?: "Geçersiz dosya yolu.")
-        val findings = SecretGuard.scan(listOf(SecretCandidate(v.normalizedPath, bytes)))
-        if (findings.isNotEmpty()) throw GitHubApiException(0, SecretGuard.formatError(findings))
 
         val blobSha = createBlob(
             token, owner, repo, bytes,

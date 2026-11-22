@@ -382,6 +382,7 @@ fun PathPickerSheet(
 fun ProgressSheet(
     currentStep: String, current: Int, total: Int,
     error: String? = null, onRetry: (() -> Unit)? = null, onCancel: (() -> Unit)? = null,
+    onForce: (() -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val progress = if (total > 0) (current.toFloat() / total).coerceIn(0f, 1f) else 0f
@@ -422,7 +423,8 @@ fun ProgressSheet(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         if (onCancel != null) TextButton(onClick = onCancel) { Text("İptal") }
                         Spacer(Modifier.width(8.dp))
-                        if (onRetry != null) Button(onClick = onRetry) { Text("Tekrar Dene") }
+                        if (onForce != null) Button(onClick = onForce) { Text("Yine de Gönder") }
+                        else if (onRetry != null) Button(onClick = onRetry) { Text("Tekrar Dene") }
                     }
                 }
             }

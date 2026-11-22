@@ -475,6 +475,7 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
     suspend fun executePush(
         token: String, owner: String, repo: String, branch: String, commitMessage: String,
         plan: PushPlan, authorName: String? = null, authorEmail: String? = null,
+        allowSecrets: Boolean = false,
     ): Boolean {
         if (isUploading) return false // çift çağrı koruması
         val items = plan.pushItems
@@ -492,6 +493,7 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
                     commitMessage = commitMessage, filesToPush = items,
                     approvedDeletePaths = plan.approvedDeletePaths,
                     authorName = authorName, authorEmail = authorEmail,
+                    allowSecrets = allowSecrets,
                     onProgress = { step, current, total ->
                         uploadStep = step
                         uploadProgressCurrent = current
