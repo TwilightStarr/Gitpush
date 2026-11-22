@@ -45,6 +45,8 @@ object Graph {
         lock = AppLockProvider(AppLockService(storage.secure), storage, scope)
         repo = RepoProvider(github, storage)
         upload = UploadProvider(github, storage)
+        // Önceki oturumdan kalan geçici (büyük dosya) kopyalarını temizle.
+        Thread { com.example.gitpush.util.Spool.clearAll(appContext) }.apply { isDaemon = true }.start()
     }
 }
 

@@ -76,7 +76,8 @@ class ZipAlignment(
 private class AlignCandidate(val k: Int, val prefix: String, val votes: Int)
 
 object RepoDiff {
-    const val MAX_BLOB_BYTES = 50 * 1024 * 1024
+    /** GitHub, Git Data API ile tek blob için en çok 100 MB kabul eder. */
+    const val MAX_BLOB_BYTES = 100L * 1024 * 1024
 
     /** Her dosyayı repo ağacıyla karşılaştırıp durumunu belirler. index == null -> durum bilinmiyor. */
     fun classify(files: List<GitFileItem>, index: RepoTreeIndex?) {
@@ -107,13 +108,13 @@ object RepoDiff {
             setConflict(f, validation.error ?: "Geçersiz dosya yolu.")
             return
         }
-        val bytes = f.bytes
-        if (bytes == null) {
+        val source = f.source
+        if (source == null) {
             setConflict(f, "Dosya içeriği okunamadı.")
             return
         }
-        if (f.size > MAX_BLOB_BYTES || bytes.size > MAX_BLOB_BYTES) {
-            setConflict(f, "Dosya 50 MB sınırını aşıyor; gönderilemez.")
+        if (f.size > MAX_BLOB_BYTES || source.size > MAX_BLOB_BYTES) {
+            setConflict(f, "Dosya 100 MB sınırını aşıyor; GitHub bu boyutta dosyayı kabul etmez.")
             return
         }
         if (index == null) {
@@ -134,7 +135,7 @@ object RepoDiff {
                 setConflict(f, "Bu yol bir alt modül (submodule); üzerine yazılamaz.")
                 return
             }
-            if (f.computedSha == null) f.computedSha = GitHubService.calculateGitBlobSha(bytes)
+            if (f.computedSha == null) f.computedSha = GitHubService.calculateGitBlobSha(source)
             f.remoteSha = node.sha
             f.remoteMode = node.mode
             f.statusKnown = true

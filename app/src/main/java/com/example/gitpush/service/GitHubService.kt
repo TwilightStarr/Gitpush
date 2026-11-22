@@ -16,6 +16,8 @@ import com.example.gitpush.model.RepoNode
 import com.example.gitpush.model.RepoTreeIndex
 import com.example.gitpush.model.RepoTreeResult
 import com.example.gitpush.model.TreeEntry
+import com.example.gitpush.util.BytesSource
+import com.example.gitpush.util.ContentSource
 import com.example.gitpush.util.SealedBox
 import com.example.gitpush.util.SecretCandidate
 import com.example.gitpush.util.SecretGuard
@@ -27,6 +29,8 @@ import com.example.gitpush.util.asStr
 import com.example.gitpush.util.encodeComponent
 import com.example.gitpush.util.encodePath
 import com.example.gitpush.util.encodeQueryComponent
+import com.example.gitpush.util.formatBytes
+import com.example.gitpush.util.readSmall
 import com.example.gitpush.util.normalizeAndValidateGitPath
 import com.example.gitpush.util.parseJson
 import kotlinx.coroutines.CancellationException
@@ -64,9 +68,10 @@ class GitHubApiException(
 }
 
 /** Push planındaki, doğrulanmış tek dosya. */
-private class PlannedFile(val item: GitFileItem, val path: String, val bytes: ByteArray) {
+private class PlannedFile(val item: GitFileItem, val path: String, val source: ContentSource) {
     var mode = "100644"
     var existed = false
+    var sha: String? = null
 }
 
 /** commitTreeChanges girdisi. sha == null -> dosya silinir. */
@@ -87,15 +92,17 @@ class GitHubService(
         const val USER_AGENT = "Gitpush"
         private const val DEFAULT_TIMEOUT_MS = 30_000L
         private const val BLOB_TIMEOUT_MS = 90_000L
-        private const val BLOB_MAX_TIMEOUT_MS = 15 * 60_000L
+        private const val BLOB_MAX_TIMEOUT_MS = 30 * 60_000L
         /** Zaman aşımı hesabında varsayılan en düşük yükleme hızı (bayt/sn). */
         private const val MIN_UPLOAD_BYTES_PER_SEC = 40_000L
         /** Bu boyutun üstündeki dosyalar tek başına (eşzamanlı olmadan) yüklenir. */
         private const val PARALLEL_BATCH_BYTES = 4L * 1024 * 1024
 
         /** Dosya boyutuna göre ölçeklenen blob zaman aşımı (base64 ~%33 büyütür). */
-        fun blobTimeoutMs(rawBytes: Int): Long {
-            val encoded = rawBytes.toLong() * 4 / 3
+        fun blobTimeoutMs(rawBytes: Int): Long = blobTimeoutMs(rawBytes.toLong())
+
+        fun blobTimeoutMs(rawBytes: Long): Long {
+            val encoded = rawBytes * 4 / 3
             val t = 60_000L + encoded * 1000 / MIN_UPLOAD_BYTES_PER_SEC
             return t.coerceIn(BLOB_TIMEOUT_MS, BLOB_MAX_TIMEOUT_MS)
         }
@@ -110,7 +117,13 @@ class GitHubService(
         /** Bu sayıdan az blob varsa bekleme uygulanmaz. */
         private const val BLOB_PACING_FREE = 20
         private const val BLOB_CONCURRENCY = 2
-        private const val MAX_BLOB_BYTES = 50 * 1024 * 1024
+        private const val MAX_BLOB_BYTES = RepoDiff.MAX_BLOB_BYTES
+        /** Bu boyuta kadar olan UTF-8 metin dosyaları ağaç isteğine satır içi konur. */
+        private const val INLINE_MAX_BYTES = 256L * 1024
+        /** Bu boyutun üstündeki blob'lar için, daha önce yüklenmiş mi diye HEAD ile bakılır (kesilen gönderimi sürdürür). */
+        private const val BLOB_EXISTS_CHECK_MIN_BYTES = 1L * 1024 * 1024
+        /** Bu boyutun üstündeki dosyalarda yükleme başlarken kullanıcıya dosya adı gösterilir. */
+        private const val BIG_FILE_NOTICE_BYTES = 5L * 1024 * 1024
 
         private val nameRe = Regex("^[A-Za-z0-9_.-]{1,100}$")
         private val tokenRe = Regex("^[\\x21-\\x7E]{1,255}$")
@@ -128,6 +141,21 @@ class GitHubService(
          * Baytlar birebir geri üretilebilen, boş olmayan UTF-8 metinse String döndürür (tree isteğinde
          * `content` olarak gönderilebilir); aksi halde null (blob olarak yüklenir).
          */
+        /** Git blob SHA-1'i dosyayı akışla okuyarak hesaplar (RAM kullanımı sabit). */
+        fun calculateGitBlobSha(source: ContentSource): String {
+            val md = MessageDigest.getInstance("SHA-1")
+            md.update("blob ${source.size}\u0000".toByteArray(Charsets.UTF_8))
+            source.open().use { ins ->
+                val buf = ByteArray(128 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+
         internal fun decodeInlineText(bytes: ByteArray): String? {
             if (bytes.isEmpty()) return null
             for (b in bytes) if (b.toInt() == 0) return null
@@ -211,16 +239,26 @@ class GitHubService(
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         retryIo: Boolean = method == "GET",
     ): HttpResult {
+        val encoded = body?.toString()
+        return sendRaw(path, token, retryIo) { url, h -> transport.execute(method, url, h, encoded, timeoutMs) }
+    }
+
+    /** Ortak istek döngüsü: token/URL güvenlik denetimi, IO hatasında yeniden deneme, oran sınırı beklemesi. */
+    private suspend fun sendRaw(
+        path: String,
+        token: String,
+        retryIo: Boolean,
+        call: suspend (url: String, headers: Map<String, String>) -> HttpResult,
+    ): HttpResult {
         checkToken(token)
         val url = "$BASE_URL$path"
         if (!url.startsWith("https://api.github.com/")) {
             throw GitHubApiException(0, "Güvenlik: yalnızca api.github.com adresine istek gönderilebilir.")
         }
-        val encoded = body?.toString()
         var attempt = 1
         while (true) {
             val res: HttpResult = try {
-                transport.execute(method, url, headers(token), encoded, timeoutMs)
+                call(url, headers(token))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -421,20 +459,37 @@ class GitHubService(
         repo: String,
         bytes: ByteArray,
         workflowHint: Boolean = false,
+    ): String = createBlob(token, owner, repo, BytesSource(bytes), workflowHint)
+
+    /** İçeriği belleğe almadan, base64 JSON gövdesini akışla göndererek blob oluşturur (en çok 100 MB). */
+    suspend fun createBlob(
+        token: String,
+        owner: String,
+        repo: String,
+        source: ContentSource,
+        workflowHint: Boolean = false,
     ): String {
-        val res = send(
-            "POST", "${repoPath(owner, repo)}/git/blobs", token,
-            body = buildJsonObject {
-                put("content", Base64.encodeToString(bytes, Base64.NO_WRAP))
-                put("encoding", "base64")
-            },
-            timeoutMs = blobTimeoutMs(bytes.size),
+        val timeout = blobTimeoutMs(source.size)
+        val res = sendRaw(
+            "${repoPath(owner, repo)}/git/blobs", token,
             retryIo = true, // blob oluşturma içerik-adresli olduğundan tekrar denemek güvenlidir
-        )
+        ) { url, h -> transport.postBase64Blob(url, h, source, timeout) }
         if (res.code == 201) {
             return jsonObj(res)["sha"].asStr ?: throw GitHubApiException(201, "Blob yanıtı okunamadı.")
         }
         throw apiError(res, workflowHint)
+    }
+
+    /** Blob repoda zaten var mı (önceki yarım kalmış denemeden)? Herhangi bir belirsizlikte false -> yeniden yüklenir. */
+    private suspend fun blobExists(token: String, owner: String, repo: String, sha: String): Boolean {
+        if (!shaRe.matches(sha)) return false
+        return try {
+            send("HEAD", "${repoPath(owner, repo)}/git/blobs/$sha", token, retryIo = true).code == 200
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun commitBody(message: String, tree: String, parent: String?, name: String?, email: String?): JsonObject {
@@ -497,11 +552,11 @@ class GitHubService(
                 requestedDeletes.add(v.normalizedPath)
                 continue
             }
-            val bytes = item.bytes ?: throw GitHubApiException(0, "Dosya içeriği okunamadı: ${v.normalizedPath}")
-            if (bytes.size > MAX_BLOB_BYTES) {
-                throw GitHubApiException(0, "50 MB üstü dosya gönderilemez: ${v.normalizedPath}")
+            val source = item.source ?: throw GitHubApiException(0, "Dosya içeriği okunamadı: ${v.normalizedPath}")
+            if (source.size > MAX_BLOB_BYTES) {
+                throw GitHubApiException(0, "100 MB üstü dosya gönderilemez (GitHub sınırı): ${v.normalizedPath}")
             }
-            planned.add(PlannedFile(item, v.normalizedPath, bytes))
+            planned.add(PlannedFile(item, v.normalizedPath, source))
         }
 
         // Aynı gönderimde bir yol hem dosya hem klasör olamaz
@@ -517,7 +572,9 @@ class GitHubService(
         }
 
         // 2) Gizli bilgi taraması
-        val secretFindings = SecretGuard.scan(planned.map { SecretCandidate(it.path, it.bytes) })
+        val secretFindings = SecretGuard.scan(
+            planned.map { p -> SecretCandidate(p.path, p.source.size) { p.source.readSmall(SecretGuard.MAX_SCAN_BYTES) } },
+        )
         if (secretFindings.isNotEmpty()) throw GitHubApiException(0, SecretGuard.formatError(secretFindings))
 
         val progressTotal = filesToPush.size
@@ -589,7 +646,8 @@ class GitHubService(
             val blobNode = if (node != null && node.isBlob) node else null
             var knownSha = blobNode?.sha
             if (baseTruncated && knownSha == null) knownSha = p.item.remoteSha
-            val localSha = p.item.computedSha ?: calculateGitBlobSha(p.bytes)
+            val localSha = p.item.computedSha ?: calculateGitBlobSha(p.source)
+            p.sha = localSha
             if (knownSha != null && knownSha == localSha) {
                 skipped++
                 continue
@@ -604,14 +662,16 @@ class GitHubService(
             return PushResult(noChanges = true, skipped = skipped, warnings = warnings)
         }
 
-        // 7) Metin dosyaları ağaç isteğine satır içi (content) konur -> dosya başına ayrı istek yok.
-        //    Yalnızca ikili / boş / geçerli UTF-8 olmayan dosyalar blob olarak yüklenir.
+        // 7) Küçük UTF-8 metin dosyaları ağaç isteğine satır içi (content) konur -> dosya başına ayrı istek yok.
+        //    Diğerleri (ikili / boş / büyük / geçerli UTF-8 olmayan) blob olarak, içerik belleğe alınmadan akışla yüklenir.
         //    (1000+ dosyalı projelerde tek tek blob isteği GitHub'ın içerik oluşturma sınırına takılıyordu.)
-        val inlineTexts = arrayOfNulls<String>(toUpload.size)
+        val inlineFlags = BooleanArray(toUpload.size)
         val blobIdx = ArrayList<Int>()
         for (j in toUpload.indices) {
-            val text = decodeInlineText(toUpload[j].bytes)
-            if (text != null) inlineTexts[j] = text else blobIdx.add(j)
+            val src = toUpload[j].source
+            val inline = src.size in 1..INLINE_MAX_BYTES &&
+                decodeInlineText(src.readSmall(INLINE_MAX_BYTES)) != null
+            if (inline) inlineFlags[j] = true else blobIdx.add(j)
         }
 
         val workTotal = toUpload.size
@@ -624,18 +684,33 @@ class GitHubService(
             // Büyük dosyalar bant genişliğini paylaşıp zaman aşımına düşmesin diye tek tek yüklenir.
             val first = blobIdx[bi]
             var end = bi + 1
-            var batchBytes = toUpload[first].bytes.size.toLong()
+            var batchBytes = toUpload[first].source.size
             while (!paced && end < blobIdx.size && end - bi < BLOB_CONCURRENCY &&
-                batchBytes + toUpload[blobIdx[end]].bytes.size <= PARALLEL_BATCH_BYTES
+                batchBytes + toUpload[blobIdx[end]].source.size <= PARALLEL_BATCH_BYTES
             ) {
-                batchBytes += toUpload[blobIdx[end]].bytes.size
+                batchBytes += toUpload[blobIdx[end]].source.size
                 end++
             }
             coroutineScope {
                 (bi until end).map { k ->
                     async {
                         val j = blobIdx[k]
-                        blobShas[j] = createBlob(token, owner, repo, toUpload[j].bytes, workflowHint = touchesWorkflows)
+                        val p = toUpload[j]
+                        val src = p.source
+                        // Kesilen önceki gönderimde zaten yüklenmiş büyük blob'u tekrar yükleme.
+                        val already = src.size >= BLOB_EXISTS_CHECK_MIN_BYTES && p.sha != null &&
+                            blobExists(token, owner, repo, p.sha!!)
+                        if (already) {
+                            blobShas[j] = p.sha
+                        } else {
+                            if (src.size >= BIG_FILE_NOTICE_BYTES) {
+                                onProgress(
+                                    "Büyük dosya yükleniyor: ${p.path.substringAfterLast('/')} (${formatBytes(src.size)})",
+                                    processed.get(), workTotal,
+                                )
+                            }
+                            blobShas[j] = createBlob(token, owner, repo, src, workflowHint = touchesWorkflows)
+                        }
                         val n = processed.incrementAndGet()
                         onProgress("Dosyalar yükleniyor ($n/$workTotal)", n, workTotal)
                     }
@@ -645,35 +720,41 @@ class GitHubService(
             if (paced && bi < blobIdx.size) sleep(BLOB_PACING_MS)
         }
 
-        // 8) Ağaç (parça parça, her parça bir öncekinin üstüne kurulur)
-        class TreeItem(val json: JsonObject, val weight: Long)
-        val treeItems = ArrayList<TreeItem>()
+        // 8) Ağaç (parça parça, her parça bir öncekinin üstüne kurulur).
+        //    JSON'lar parça gönderilirken üretilir; bütün metin içerikleri aynı anda RAM'de tutulmaz.
+        class TreePlan(val weight: Long, val build: () -> JsonObject)
+        val treePlans = ArrayList<TreePlan>()
         for (j in toUpload.indices) {
-            val text = inlineTexts[j]
+            val p = toUpload[j]
+            val inline = inlineFlags[j]
             val sha = blobShas[j]
-            treeItems.add(
-                TreeItem(
+            treePlans.add(
+                TreePlan(if (inline) p.source.size + 200 else 200) {
                     buildJsonObject {
-                        put("path", toUpload[j].path)
-                        put("mode", toUpload[j].mode)
+                        put("path", p.path)
+                        put("mode", p.mode)
                         put("type", "blob")
-                        if (text != null) put("content", text) else put("sha", sha)
-                    },
-                    if (text != null) toUpload[j].bytes.size.toLong() + 200 else 200,
-                ),
+                        if (inline) {
+                            val text = decodeInlineText(p.source.readSmall(INLINE_MAX_BYTES))
+                                ?: throw GitHubApiException(0, "Dosya gönderim sırasında değişti: ${p.path}")
+                            put("content", text)
+                        } else {
+                            put("sha", sha)
+                        }
+                    }
+                },
             )
         }
         for (path in deletePaths) {
-            treeItems.add(
-                TreeItem(
+            treePlans.add(
+                TreePlan(200) {
                     buildJsonObject {
                         put("path", path)
                         put("mode", "100644")
                         put("type", "blob")
                         put("sha", JsonNull) // silme
-                    },
-                    200,
-                ),
+                    }
+                },
             )
         }
 
@@ -681,25 +762,29 @@ class GitHubService(
             throw GitHubApiException(0, "Base tree alınamadı; repo dosyalarının silinmemesi için işlem iptal edildi.")
         }
 
-        val chunks = ArrayList<List<JsonObject>>()
+        val chunkRanges = ArrayList<IntRange>()
         run {
-            var cur = ArrayList<JsonObject>()
+            var start = 0
+            var count = 0
             var curBytes = 0L
-            for (t in treeItems) {
-                if (cur.isNotEmpty() && (cur.size >= TREE_CHUNK_ENTRIES || curBytes + t.weight > TREE_CHUNK_BYTES)) {
-                    chunks.add(cur)
-                    cur = ArrayList()
+            for (i in treePlans.indices) {
+                val w = treePlans[i].weight
+                if (count > 0 && (count >= TREE_CHUNK_ENTRIES || curBytes + w > TREE_CHUNK_BYTES)) {
+                    chunkRanges.add(start until i)
+                    start = i
+                    count = 0
                     curBytes = 0L
                 }
-                cur.add(t.json)
-                curBytes += t.weight
+                count++
+                curBytes += w
             }
-            if (cur.isNotEmpty()) chunks.add(cur)
+            if (count > 0) chunkRanges.add(start until treePlans.size)
         }
 
         var newTreeSha: String? = baseTreeSha
-        for ((ci, chunk) in chunks.withIndex()) {
-            onProgress("Git ağacı oluşturuluyor (${ci + 1}/${chunks.size})...", workTotal, workTotal)
+        for ((ci, range) in chunkRanges.withIndex()) {
+            onProgress("Git ağacı oluşturuluyor (${ci + 1}/${chunkRanges.size})...", workTotal, workTotal)
+            val chunk = range.map { treePlans[it].build() }
             val treeBody = buildJsonObject {
                 put("tree", JsonArray(chunk))
                 if (newTreeSha != null) put("base_tree", newTreeSha)
@@ -707,7 +792,7 @@ class GitHubService(
             val treeRes = send("POST", "${repoPath(owner, repo)}/git/trees", token, body = treeBody, timeoutMs = BLOB_TIMEOUT_MS)
             if (treeRes.code != 201) throw apiError(treeRes, touchesWorkflows)
             newTreeSha = jsonObj(treeRes)["sha"].asStr ?: throw GitHubApiException(201, "Ağaç yanıtı okunamadı.")
-            if (ci < chunks.size - 1) sleep(1000) // içerik oluşturan istekler arasında nefes payı
+            if (ci < chunkRanges.size - 1) sleep(1000) // içerik oluşturan istekler arasında nefes payı
         }
         val finalTreeSha = newTreeSha ?: throw GitHubApiException(0, "Git ağacı oluşturulamadı.")
 
@@ -1058,7 +1143,7 @@ class GitHubService(
         bytes: ByteArray, message: String, mode: String? = null,
         authorName: String? = null, authorEmail: String? = null,
     ): String {
-        if (bytes.size > MAX_BLOB_BYTES) throw GitHubApiException(0, "50 MB üstü dosya gönderilemez.")
+        if (bytes.size > MAX_BLOB_BYTES) throw GitHubApiException(0, "100 MB üstü dosya gönderilemez.")
         val v = normalizeAndValidateGitPath(path)
         if (!v.isValid) throw GitHubApiException(0, v.error ?: "Geçersiz dosya yolu.")
         val findings = SecretGuard.scan(listOf(SecretCandidate(v.normalizedPath, bytes)))

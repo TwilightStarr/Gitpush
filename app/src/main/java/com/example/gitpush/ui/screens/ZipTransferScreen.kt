@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,7 +52,6 @@ import com.example.gitpush.ui.components.ScreenBack
 import com.example.gitpush.ui.components.SectionCard
 import com.example.gitpush.ui.components.SendBottomBar
 import com.example.gitpush.util.formatBytes
-import com.example.gitpush.util.readPickedFile
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,19 +69,25 @@ fun ZipTransferScreen() {
         up.resetZip()
         g.nav.pop()
     }
-    ScreenBack { close() }
+    ScreenBack(enabled = !up.zipBusy) { close() }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val picked = readPickedFile(ctx, uri)
-            if (picked == null) { Snacks.show("Dosya okunamadı veya 100 MB sınırını aşıyor."); return@launch }
             try {
-                up.setZipArchive(picked.name, picked.bytes)
+                up.importZip(ctx, uri)
                 g.auth.token?.let { g.repo.refreshTree(it) }
                 up.reclassifyAll(g.repo.treeIndex, g.repo.treeTruncated)
                 if (up.zipFiles.isEmpty()) Snacks.show("ZIP içinde gönderilebilir dosya bulunamadı.")
-            } catch (e: ZipServiceException) { Snacks.show(e.message) }
+            } catch (e: ZipServiceException) {
+                Snacks.show(e.message)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: java.io.IOException) {
+                Snacks.show(e.message ?: "ZIP okunamadı.")
+            } catch (e: OutOfMemoryError) {
+                Snacks.show("Bellek yetersiz kaldı; ZIP işlenemedi.")
+            }
         }
     }
     val zipMimes = arrayOf("application/zip", "application/x-zip-compressed", "application/x-zip", "application/octet-stream")
@@ -93,11 +99,11 @@ fun ZipTransferScreen() {
         topBar = {
             TopAppBar(
                 title = { Text("ZIP'ten Aktar") },
-                navigationIcon = { IconButton(onClick = { close() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Geri") } },
+                navigationIcon = { IconButton(onClick = { if (!up.zipBusy) close() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Geri") } },
             )
         },
         bottomBar = {
-            if (up.zipFileName != null) {
+            if (up.zipFileName != null && !up.zipBusy) {
                 SendBottomBar(
                     summaryText = "${selectedFiles.size} / ${up.zipFiles.size} dosya seçili",
                     buttonLabel = "İncele",
@@ -111,7 +117,18 @@ fun ZipTransferScreen() {
         },
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (up.zipFileName == null) {
+            if (up.zipBusy) {
+                SectionCard("ZIP hazırlanıyor") {
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Text(up.zipBusyText, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "Büyük arşivlerde bu birkaç dakika sürebilir. Lütfen uygulamayı kapatmayın.",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else if (up.zipFileName == null) {
                 SectionCard("ZIP arşivi seçin") {
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Outlined.FolderZip, null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
@@ -125,6 +142,14 @@ fun ZipTransferScreen() {
                 SectionCard("Arşiv", trailing = { TextButton(onClick = { picker.launch(zipMimes) }) { Text("Değiştir") } }) {
                     Text(up.zipFileName ?: "", fontWeight = FontWeight.Bold)
                     Text("${formatBytes(up.zipFileSize)} · ${up.zipFiles.size} dosya", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (up.zipOversizedEntries.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "${up.zipOversizedEntries.size} dosya 100 MB GitHub sınırını aştığı için atlandı: " +
+                                up.zipOversizedEntries.take(3).joinToString(", ") + if (up.zipOversizedEntries.size > 3) " …" else "",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     if (up.zipInvalidEntries.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
                         Text("${up.zipInvalidEntries.size} güvensiz/geçersiz girdi atlandı.", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)

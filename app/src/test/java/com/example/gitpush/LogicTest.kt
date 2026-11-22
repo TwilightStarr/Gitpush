@@ -257,6 +257,8 @@ class BlobTimeoutTest {
         val big = com.example.gitpush.service.GitHubService.blobTimeoutMs(50 * 1024 * 1024)
         org.junit.Assert.assertEquals(90_000L, small)
         org.junit.Assert.assertTrue(big > small)
-        org.junit.Assert.assertTrue(big <= 15 * 60_000L)
+        org.junit.Assert.assertTrue(big <= 30 * 60_000L)
+        // 100 MB'lık dosya için süre üst sınırda kalır
+        org.junit.Assert.assertEquals(30 * 60_000L, com.example.gitpush.service.GitHubService.blobTimeoutMs(100L * 1024 * 1024))
     }
 }

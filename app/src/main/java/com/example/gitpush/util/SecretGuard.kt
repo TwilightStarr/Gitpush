@@ -1,11 +1,19 @@
 package com.example.gitpush.util
 
-class SecretCandidate(val path: String, val bytes: ByteArray)
+/**
+ * Taranacak dosya. İçerik tembel yüklenir ([load]); böylece binlerce dosya aynı anda RAM'de tutulmaz
+ * ve [MAX_SCAN_BYTES] üstündeki dosyalar hiç okunmaz.
+ */
+class SecretCandidate(val path: String, val size: Long, private val loader: () -> ByteArray) {
+    constructor(path: String, bytes: ByteArray) : this(path, bytes.size.toLong(), { bytes })
+
+    fun load(): ByteArray = loader()
+}
 class SecretFinding(val path: String, val reason: String)
 
 /** Push öncesi gizli bilgi (token, özel anahtar, .env...) taraması. */
 object SecretGuard {
-    private const val MAX_SCAN_BYTES = 2 * 1024 * 1024
+    const val MAX_SCAN_BYTES = 2L * 1024 * 1024
 
     private val envFile = Regex("""^\.env(\..+)?$""")
     private val safeEnvSuffix = Regex("""\.(example|sample|template|dist|defaults?)$""", RegexOption.IGNORE_CASE)
@@ -46,8 +54,10 @@ object SecretGuard {
                 findings.add(SecretFinding(f.path, "Hassas dosya adı"))
                 continue
             }
-            if (f.bytes.size > MAX_SCAN_BYTES || looksBinary(f.bytes)) continue
-            val text = String(f.bytes, Charsets.UTF_8) // hatalı baytlar U+FFFD olur (allowMalformed)
+            if (f.size > MAX_SCAN_BYTES) continue
+            val bytes = f.load()
+            if (bytes.size > MAX_SCAN_BYTES || looksBinary(bytes)) continue
+            val text = String(bytes, Charsets.UTF_8) // hatalı baytlar U+FFFD olur (allowMalformed)
             for ((name, regex) in patterns) {
                 if (regex.containsMatchIn(text)) {
                     findings.add(SecretFinding(f.path, name))

@@ -1,5 +1,8 @@
 package com.example.gitpush.model
 
+import com.example.gitpush.util.BytesSource
+import com.example.gitpush.util.ContentSource
+import com.example.gitpush.util.FileSource
 import com.example.gitpush.util.appendFileNameIfFolder
 import com.example.gitpush.util.asBool
 import com.example.gitpush.util.asInt
@@ -10,6 +13,7 @@ import com.example.gitpush.util.parseJson
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
 import java.time.Instant
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -239,9 +243,15 @@ class GitFileItem(
     /** Yol kullanıcı tarafından elle verildi; otomatik eşleştirme dokunmaz. */
     var pathManual: Boolean = false,
     var suggestions: List<String> = emptyList(),
+    /** Büyük dosyalar RAM'de değil diskte tutulur; doluysa [bytes] yerine bu kullanılır. */
+    val file: File? = null,
 ) {
     val id: Int = id ?: nextId.getAndIncrement()
     val sourceName: String = sourceName ?: lastSegment(localPath)
+
+    /** İçerik kaynağı (disk ya da bellek); yoksa null. */
+    val source: ContentSource?
+        get() = file?.let { FileSource(it) } ?: bytes?.let { BytesSource(it) }
 
     fun copyWith(repoPath: String? = null, isSelected: Boolean? = null, status: GitFileStatus? = null) =
         GitFileItem(
@@ -261,6 +271,7 @@ class GitFileItem(
             needsChoice = needsChoice,
             pathManual = pathManual,
             suggestions = suggestions.toList(),
+            file = file,
         )
 
     val fileName: String get() = sourceName

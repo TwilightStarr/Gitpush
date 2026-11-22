@@ -51,7 +51,6 @@ import com.example.gitpush.ui.components.PathPickerSheet
 import com.example.gitpush.ui.components.QuickCommandChips
 import com.example.gitpush.ui.components.ScreenBack
 import com.example.gitpush.ui.components.SendBottomBar
-import com.example.gitpush.util.readPickedFile
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,6 +70,7 @@ fun MultiFileScreen() {
 
     fun close() {
         up.clearMultiFiles()
+        up.purgeMultiSpool()
         g.nav.pop()
     }
     ScreenBack { close() }
@@ -80,17 +80,37 @@ fun MultiFileScreen() {
         scope.launch {
             val items = ArrayList<GitFileItem>()
             var skipped = 0
+            Snacks.show("Dosyalar hazırlanıyor; büyük dosyalar biraz sürebilir...")
             for (u in uris) {
-                val f = readPickedFile(ctx, u)
+                // Küçük dosyalar bellekte, büyükler diske akışla alınır (RAM'e tamamen okunmaz).
+                val f = try {
+                    com.example.gitpush.util.readOrSpoolPickedFile(
+                        ctx, u, up.multiSpool(ctx), com.example.gitpush.service.RepoDiff.MAX_BLOB_BYTES,
+                    )
+                } catch (e: java.io.IOException) {
+                    Snacks.show(e.message ?: "Dosya okunamadı.")
+                    null
+                }
                 if (f == null) { skipped++; continue }
-                items.add(GitFileItem(localPath = f.uri, repoPath = f.name, size = f.size.toInt(), bytes = f.bytes, sourceName = f.name))
+                val item = GitFileItem(
+                    localPath = f.uri, repoPath = f.name, size = f.size.toInt(),
+                    bytes = f.bytes, file = f.file, sourceName = f.name,
+                )
+                val diskFile = f.file
+                if (diskFile != null) {
+                    // SHA-1'i ana iş parçacığını bloklamadan, akışla bir kez hesapla.
+                    item.computedSha = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.example.gitpush.service.GitHubService.calculateGitBlobSha(com.example.gitpush.util.FileSource(diskFile))
+                    }
+                }
+                items.add(item)
             }
             if (items.isNotEmpty()) {
                 g.auth.token?.let { if (g.repo.treeIndex == null) g.repo.refreshTree(it) }
                 up.reclassifyAll(g.repo.treeIndex, g.repo.treeTruncated)
                 up.addMultiFiles(items)
             }
-            if (skipped > 0) Snacks.show("$skipped dosya okunamadı veya 100 MB sınırını aşıyor.")
+            if (skipped > 0) Snacks.show("$skipped dosya okunamadı veya GitHub'ın 100 MB dosya sınırını aşıyor.")
         }
     }
 

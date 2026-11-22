@@ -18,6 +18,7 @@ Android için Jetpack Compose ile yazılmıştır.
 - **ZIP'ten Aktar:** arşivi açar, `__MACOSX`/`.DS_Store`/`.git` gibi önemsizleri ayıklar, zip-slip girdilerini reddeder,
   tek üst klasörü düzleştirir, repodaki gerçek konuma otomatik hizalar, harf büyüklüğü farklarını düzeltir,
   isteğe bağlı "ZIP'te olmayan repo dosyalarını sil" (kapsamlı ve ayrıca onaylı)
+- **Büyük dosyalar:** ZIP ve dosyalar RAM'e okunmaz; diske akışla kopyalanır, SHA-1 ve yükleme akışla yapılır (1 GB'lık arşivler dahil, boş disk yeter). GitHub'ın tek dosya sınırı 100 MB'dır; daha büyük dosyalar atlanır/uyarılır. Kesilen yüklemede büyük blob'lar yeniden yüklenmez.
 - **Dosyaları Güncelle:** birden çok dosya, her biri için ayrı hedef yol; repoda aynı adlı dosyayı otomatik eşleştirme,
   klasör seçici, kısayol çipleri, metinle toplu yol komutları, geri alınabilir silme/temizleme
 - Her gönderim önce **önizlenir** (yeni / güncelleme / silinecek / değişmedi / çakışma)

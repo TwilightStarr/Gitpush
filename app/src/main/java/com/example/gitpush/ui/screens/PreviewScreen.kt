@@ -78,6 +78,13 @@ fun PreviewScreen(source: PreviewSource, commitMessage: String) {
 
     ScreenBack(enabled = !upload.isUploading) { g.nav.pop() }
 
+    // Uzun (büyük dosyalı) gönderimlerde ekran kapanıp işlem askıya alınmasın.
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(upload.isUploading) {
+        view.keepScreenOn = upload.isUploading
+        onDispose { view.keepScreenOn = false }
+    }
+
     suspend fun doPush() {
         if (repo == null || branch == null) return
         showProgress = true

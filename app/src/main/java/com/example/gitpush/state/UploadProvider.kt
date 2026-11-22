@@ -1,5 +1,7 @@
 package com.example.gitpush.state
 
+import android.content.Context
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,7 +17,15 @@ import com.example.gitpush.service.RepoDiff
 import com.example.gitpush.service.StorageService
 import com.example.gitpush.service.ZipAlignment
 import com.example.gitpush.service.ZipServiceException
+import com.example.gitpush.service.ExtractedEntry
 import com.example.gitpush.service.ZipService
+import com.example.gitpush.util.Spool
+import com.example.gitpush.util.formatBytes
+import com.example.gitpush.util.queryNameAndSize
+import com.example.gitpush.util.spoolUriToFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import com.example.gitpush.util.appendFileNameIfFolder
 import com.example.gitpush.util.normalizeAndValidateGitPath
 import com.example.gitpush.util.normalizeFolderPrefix
@@ -40,9 +50,17 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
     // ── ZIP ──
     var zipFileName: String? = null
         private set
-    var zipFileSize = 0
+    var zipFileSize = 0L
         private set
-    private var zipBytes: ByteArray? = null
+    /** ZIP'ten diske açılmış dosyalar (içerik RAM'de değil, [zipSpoolDir] altında). */
+    private var zipEntries: List<ExtractedEntry> = emptyList()
+    private var zipSpoolDir: File? = null
+    var zipBusy by mutableStateOf(false)
+        private set
+    var zipBusyText by mutableStateOf("")
+        private set
+    var zipOversizedEntries: List<String> = emptyList()
+        private set
     private var zipRaw: List<GitFileItem> = emptyList()
     var zipFiles: List<GitFileItem> = emptyList()
         private set
@@ -76,6 +94,16 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
 
     // ── Çoklu dosya ──
     val multiFiles = ArrayList<GitFileItem>()
+    private var multiSpoolDir: File? = null
+
+    /** Büyük dosyaların geçici olarak tutulduğu klasör (gönderim bitince silinir). */
+    fun multiSpool(context: Context): File =
+        multiSpoolDir ?: Spool.newDir(context, "multi").also { multiSpoolDir = it }
+
+    fun purgeMultiSpool() {
+        Spool.deleteAsync(multiSpoolDir)
+        multiSpoolDir = null
+    }
 
     // ── Gönderim ──
     var isUploading by mutableStateOf(false)
@@ -119,30 +147,55 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
 
     // ───────────────────────── ZIP ─────────────────────────
 
-    fun setZipArchive(fileName: String, bytes: ByteArray) {
-        val result = ZipService.extractZipBytes(bytes, zipStripRootDir)
-        zipFileName = fileName
-        zipFileSize = bytes.size
-        zipBytes = bytes
-        zipRaw = result.items
-        zipInvalidEntries = result.invalidEntries
-        rebuildZipPreview()
-        changed()
+    /**
+     * ZIP'i seçilen Uri'den okur: önce diske akışla kopyalanır, sonra dosya dosya diske açılır.
+     * RAM kullanımı arşiv boyutundan bağımsızdır (1 GB'lık arşivler için de). Hata durumunda
+     * geçici dosyalar silinir ve istisna fırlatılır ([ZipServiceException] ya da IOException).
+     */
+    suspend fun importZip(context: Context, uri: Uri) {
+        if (zipBusy) return
+        zipBusy = true
+        zipBusyText = "ZIP okunuyor..."
+        var dir: File? = null
+        try {
+            dir = withContext(Dispatchers.IO) { Spool.newDir(context, "zip") }
+            val (name, declared) = withContext(Dispatchers.IO) { queryNameAndSize(context, uri) }
+            val copy = File(dir, "source.zip")
+            val copied = spoolUriToFile(context, uri, copy, declared) { n ->
+                zipBusyText = "ZIP kopyalanıyor: ${formatBytes(n)}" +
+                    (if (declared > 0) " / ${formatBytes(declared)}" else "")
+            }
+            zipBusyText = "Arşiv açılıyor..."
+            val result = withContext(Dispatchers.IO) {
+                ZipService.extractToDir(copy, File(dir, "files")) { msg -> zipBusyText = msg }
+            }
+            withContext(Dispatchers.IO) { copy.delete() } // yer açmak için kaynak kopyayı hemen sil
+            val previousDir = zipSpoolDir
+            zipSpoolDir = dir
+            zipFileName = name
+            zipFileSize = copied
+            zipEntries = result.entries
+            zipInvalidEntries = result.invalidEntries
+            zipOversizedEntries = result.oversizedEntries
+            zipRaw = ZipService.buildItems(result.entries, zipStripRootDir)
+            Spool.deleteAsync(previousDir)
+            dir = null // artık sahibi zipSpoolDir
+            rebuildZipPreview()
+            changed()
+        } finally {
+            Spool.deleteAsync(dir) // yalnızca hata yolunda dolu
+            zipBusy = false
+        }
     }
 
     fun setZipStripRootDir(value: Boolean) {
         zipStripRootDir = value
-        val bytes = zipBytes
-        if (bytes != null) {
+        if (zipEntries.isNotEmpty()) {
+            // Dosyalar zaten diskte; yalnızca yol hesabı yenilenir.
             val previous = zipRaw.associate { it.localPath to it.isSelected }
-            try {
-                val result = ZipService.extractZipBytes(bytes, value)
-                for (f in result.items) f.isSelected = previous[f.localPath] ?: true
-                zipRaw = result.items
-                zipInvalidEntries = result.invalidEntries
-            } catch (_: ZipServiceException) {
-                // bellekteki ZIP artık okunamıyorsa mevcut liste korunur
-            }
+            val rebuilt = ZipService.buildItems(zipEntries, value)
+            for (f in rebuilt) f.isSelected = previous[f.localPath] ?: true
+            zipRaw = rebuilt
         }
         rebuildZipPreview()
         changed()
@@ -169,8 +222,11 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
 
     fun resetZip(notify: Boolean = true) {
         zipFileName = null
-        zipFileSize = 0
-        zipBytes = null
+        zipFileSize = 0L
+        Spool.deleteAsync(zipSpoolDir)
+        zipSpoolDir = null
+        zipEntries = emptyList()
+        zipOversizedEntries = emptyList()
         zipRaw = emptyList()
         zipFiles = emptyList()
         zipDeleteItems = emptyList()
@@ -379,6 +435,7 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
     fun resetAfterPush() {
         resetZip(notify = false)
         multiFiles.clear()
+        purgeMultiSpool()
         changed()
     }
 
@@ -391,6 +448,7 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
         uploadErrorKind = null
         resetZip(notify = false)
         multiFiles.clear()
+        purgeMultiSpool()
         changed()
     }
 
@@ -427,17 +485,20 @@ class UploadProvider(private val github: GitHubService, private val storage: Sto
         uploadProgressCurrent = 0
         uploadProgressTotal = items.size
         try {
-            val result = github.executeAtomicPush(
-                token = token, owner = owner, repo = repo, branch = branch,
-                commitMessage = commitMessage, filesToPush = items,
-                approvedDeletePaths = plan.approvedDeletePaths,
-                authorName = authorName, authorEmail = authorEmail,
-                onProgress = { step, current, total ->
-                    uploadStep = step
-                    uploadProgressCurrent = current
-                    uploadProgressTotal = total
-                },
-            )
+            // Disk okuma / SHA hesabı ana iş parçacığını bloklamasın.
+            val result = withContext(Dispatchers.IO) {
+                github.executeAtomicPush(
+                    token = token, owner = owner, repo = repo, branch = branch,
+                    commitMessage = commitMessage, filesToPush = items,
+                    approvedDeletePaths = plan.approvedDeletePaths,
+                    authorName = authorName, authorEmail = authorEmail,
+                    onProgress = { step, current, total ->
+                        uploadStep = step
+                        uploadProgressCurrent = current
+                        uploadProgressTotal = total
+                    },
+                )
+            }
             lastResult = result
             val sha = result.commitSha
             if (!result.noChanges && sha != null) {
